@@ -1,104 +1,279 @@
 from __future__ import annotations
 
+import math
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, Field
-
-from .metrics import CATALOG, compute_price_metrics
-from .providers.demo import DemoMarketDataProvider
+from .backtest import BACKTEST_VERSION, walk_forward_backtest
+from .metrics import CATALOG, METRIC_VERSION, compute_price_metrics
+from .providers.massive import MassiveMarketDataProvider
 from .repository import PrismRepository
-from .seed import DEMO_CUTOFF, DEMO_STOCKS
+
+def _percentile(values: list[float], value: float) -> float:
+    if len(values) <= 1:
+        return 50.0
+    below = sum(item < value for item in values)
+    equal = sum(item == value for item in values)
+    return round(100 * (below + 0.5 * equal) / len(values), 1)
 
 
-class FormulaWeights(BaseModel):
-    momentum: float = Field(default=0.30, ge=-1, le=1)
-    relative_strength: float = Field(default=0.25, ge=-1, le=1)
-    trend_quality: float = Field(default=0.20, ge=-1, le=1)
-    volume_confirmation: float = Field(default=0.15, ge=-1, le=1)
-    volatility: float = Field(default=-0.10, ge=-1, le=1)
+def _normalized_path(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    low = min(values)
+    high = max(values)
+    if high == low:
+        return [50.0 for _ in values]
+    return [round(12 + 82 * (value - low) / (high - low), 1) for value in values]
 
 
 class PrismService:
+    """Local-only research service backed exclusively by stored provider data."""
+
     def __init__(self, repository: PrismRepository) -> None:
         self.repository = repository
-        self.provider = DemoMarketDataProvider()
-        self.data_cutoff = DEMO_CUTOFF
+        api_key = os.getenv("MASSIVE_API_KEY", "").strip()
+        self.provider = MassiveMarketDataProvider(api_key=api_key) if api_key else None
 
     @property
-    def provider_name(self) -> str:
-        return self.provider.name
+    def provider_name(self) -> str | None:
+        return self.provider.name if self.provider else None
 
     @property
-    def is_demo(self) -> bool:
-        return self.provider.is_demo
+    def provider_configured(self) -> bool:
+        return self.provider is not None
 
-    def ensure_demo_data(self, force: bool = False) -> None:
-        self.repository.seed_ledger(force=force)
+    def sync_market_data(self, symbols: list[str], years: int) -> dict:
+        if not self.provider:
+            raise RuntimeError("MASSIVE_API_KEY is not configured")
+        cleaned = sorted(
+            {
+                symbol.strip().upper()
+                for symbol in symbols
+                if symbol.strip()
+            }
+        )
+        if not cleaned:
+            raise ValueError("At least one symbol is required")
+        if len(cleaned) > 100:
+            raise ValueError("A single sync is limited to 100 symbols")
+        if years < 1 or years > 20:
+            raise ValueError("Years must be between 1 and 20")
 
-    def overview(self) -> dict:
-        ledger = self.repository.list_predictions()
-        matured = [item for item in ledger if item["outcome"] != "Pending"]
-        correct = [item for item in matured if item["outcome"] == "Correct"]
+        end = datetime.now(UTC)
+        start = end - timedelta(days=366 * years)
+        sync_id = self.repository.begin_sync(self.provider.name, cleaned)
+        rows_written = 0
+        failures: list[dict[str, str]] = []
+        for symbol in cleaned:
+            try:
+                bars = self.provider.bars(symbol, start, end)
+                rows_written += self.repository.upsert_bars(bars)
+            except Exception as error:
+                failures.append({"symbol": symbol, "error": str(error)})
+
+        status = "complete" if not failures else "partial" if rows_written else "failed"
+        error_text = (
+            "; ".join(f"{item['symbol']}: {item['error']}" for item in failures)
+            if failures
+            else None
+        )
+        self.repository.finish_sync(
+            sync_id,
+            status=status,
+            rows_written=rows_written,
+            error=error_text,
+        )
+        summary = self.repository.market_summary()
         return {
-            "mode": "demo",
-            "market_regime": {
-                "label": "Selective risk-on",
-                "confidence": 0.68,
-            },
-            "candidate_coverage": {
-                "passing": 24,
-                "universe": 100,
-            },
-            "direction_hit_rate_30d": 0.578,
-            "ledger": {
-                "matured": len(matured),
-                "correct": len(correct),
-                "pending": len(ledger) - len(matured),
-            },
-            "data_cutoff": self.data_cutoff.isoformat(),
+            "sync_id": sync_id,
+            "status": status,
+            "provider": self.provider.name,
+            "symbols": cleaned,
+            "rows_written": rows_written,
+            "failures": failures,
+            "market": summary,
         }
 
-    def scan(self, horizon: str, search: str = "") -> list[dict]:
-        score_key = {
-            "10D": "score_10d",
-            "30D": "score_30d",
-            "90D": "score_90d",
-        }[horizon]
-        needle = search.lower().strip()
-        items = []
-        for symbol, stock in DEMO_STOCKS.items():
-            searchable = f"{symbol} {stock['name']} {stock['sector']}".lower()
-            if needle and needle not in searchable:
+    def _raw_snapshots(self) -> list[dict]:
+        snapshots: list[dict] = []
+        for symbol in self.repository.list_symbols():
+            bars = self.repository.list_bars(symbol)
+            if len(bars) < 21:
                 continue
-            items.append(
+            cutoff = max(bar.available_at for bar in bars)
+            snapshot = compute_price_metrics(bars, cutoff)
+            latest = bars[-1]
+            previous = bars[-2] if len(bars) > 1 else None
+            change = (
+                (latest.close / previous.close - 1.0) * 100
+                if previous and previous.close
+                else None
+            )
+            snapshots.append(
                 {
                     "symbol": symbol,
-                    **stock,
-                    "active_score": stock[score_key],
-                    "horizon": horizon,
-                    "data_cutoff": self.data_cutoff.isoformat(),
-                    "provider": self.provider_name,
+                    "price": latest.close,
+                    "change": change,
+                    "bars": _normalized_path([bar.close for bar in bars[-22:]]),
+                    "bar_count": len(bars),
+                    "first_observation": bars[0].timestamp.isoformat(),
+                    "last_observation": latest.timestamp.isoformat(),
+                    "data_cutoff": cutoff.isoformat(),
+                    "metrics": snapshot.values,
+                    "metric_version": snapshot.metric_version,
+                    "source": latest.source,
                 }
             )
-        return sorted(items, key=lambda item: item["active_score"], reverse=True)
+        return snapshots
+
+    def scan(self, horizon: str = "30D", search: str = "") -> list[dict]:
+        snapshots = self._raw_snapshots()
+        if not snapshots:
+            return []
+        momentum_values = [
+            float(item["metrics"]["return_20d"]) for item in snapshots
+        ]
+        trend_values = [
+            float(item["metrics"]["distance_ma20"]) for item in snapshots
+        ]
+        volume_values = [
+            float(item["metrics"]["volume_zscore_20d"]) for item in snapshots
+        ]
+        volatility_values = [
+            float(item["metrics"]["realized_volatility_20d"]) for item in snapshots
+        ]
+        benchmark = next(
+            (
+                float(item["metrics"]["return_20d"])
+                for item in snapshots
+                if item["symbol"] == "SPY"
+            ),
+            0.0,
+        )
+        relative_values = [
+            float(item["metrics"]["return_20d"]) - benchmark for item in snapshots
+        ]
+        needle = search.strip().upper()
+        results: list[dict] = []
+        for item, relative_value in zip(snapshots, relative_values, strict=True):
+            if needle and needle not in item["symbol"]:
+                continue
+            metrics = item["metrics"]
+            momentum = _percentile(momentum_values, float(metrics["return_20d"]))
+            relative = _percentile(relative_values, relative_value)
+            trend = _percentile(trend_values, float(metrics["distance_ma20"]))
+            volume = _percentile(volume_values, float(metrics["volume_zscore_20d"]))
+            volatility = _percentile(
+                volatility_values,
+                float(metrics["realized_volatility_20d"]),
+            )
+            base_score = (
+                0.30 * momentum
+                + 0.25 * relative
+                + 0.20 * trend
+                + 0.15 * volume
+                + 0.10 * (100 - volatility)
+            )
+            horizon_adjustment = {
+                "10D": 4.0 * math.tanh(float(metrics["return_5d"]) * 10),
+                "30D": 0.0,
+                "90D": 4.0 * math.tanh(-float(metrics["drawdown_60d"]) * -3),
+            }[horizon]
+            score = round(max(0.0, min(100.0, base_score + horizon_adjustment)), 1)
+            if score >= 65:
+                signal = "Positive relative setup"
+            elif score <= 35:
+                signal = "Weak relative setup"
+            else:
+                signal = "No strong relative edge"
+            results.append(
+                {
+                    **item,
+                    "name": item["symbol"],
+                    "sector": None,
+                    "momentum": momentum,
+                    "relativeStrength": relative,
+                    "trendQuality": trend,
+                    "volumeConfirmation": volume,
+                    "volatility": volatility,
+                    "score10": round(
+                        max(
+                            0.0,
+                            min(
+                                100.0,
+                                base_score
+                                + 4.0
+                                * math.tanh(float(metrics["return_5d"]) * 10),
+                            ),
+                        ),
+                        1,
+                    ),
+                    "score30": round(base_score, 1),
+                    "score90": round(
+                        max(
+                            0.0,
+                            min(
+                                100.0,
+                                base_score
+                                + 4.0
+                                * math.tanh(
+                                    -float(metrics["drawdown_60d"]) * -3
+                                ),
+                            ),
+                        ),
+                        1,
+                    ),
+                    "score": score,
+                    "signal": signal,
+                    "signalCopy": (
+                        "Computed only from stored Massive bars available by the "
+                        "displayed cutoff. No demo fallback is used."
+                    ),
+                    "dataQuality": round(min(100.0, item["bar_count"] / 252 * 100), 1),
+                }
+            )
+        return sorted(results, key=lambda item: item["score"], reverse=True)
 
     def stock_detail(self, symbol: str) -> dict | None:
-        stock = DEMO_STOCKS.get(symbol)
-        if stock is None:
-            return None
-        start = self.data_cutoff - timedelta(days=180)
-        bars = self.provider.bars(symbol, start, self.data_cutoff)
-        snapshot = compute_price_metrics(bars, self.data_cutoff)
+        return next(
+            (item for item in self.scan() if item["symbol"] == symbol.upper()),
+            None,
+        )
+
+    def overview(self) -> dict:
+        items = self.scan()
+        summary = self.repository.market_summary()
+        positive = sum(
+            float(item["metrics"]["return_20d"]) > 0 for item in items
+        )
+        breadth = positive / len(items) if items else None
+        if breadth is None:
+            regime = None
+        elif breadth >= 0.65:
+            regime = "Broad positive breadth"
+        elif breadth <= 0.35:
+            regime = "Broad negative breadth"
+        else:
+            regime = "Mixed breadth"
+        latest_backtest = self.repository.list_backtests(limit=1)
         return {
-            "symbol": symbol,
-            **stock,
-            "metrics": snapshot.values,
-            "metric_version": snapshot.metric_version,
-            "max_source_available_at": snapshot.max_source_available_at.isoformat(),
-            "prediction_cutoff": snapshot.prediction_cutoff.isoformat(),
-            "temporal_integrity": "passed",
             "provider": self.provider_name,
+            "provider_configured": self.provider_configured,
+            "market": summary,
+            "market_regime": {
+                "label": regime,
+                "breadth": breadth,
+            },
+            "candidate_coverage": {
+                "passing": sum(item["score30"] >= 60 for item in items),
+                "universe": len(items),
+            },
+            "latest_backtest": latest_backtest[0] if latest_backtest else None,
+            "ledger": {
+                "records": len(self.repository.list_predictions()),
+            },
         }
 
     def metric_catalog(self) -> list[dict]:
@@ -114,61 +289,32 @@ class PrismService:
             for item in CATALOG
         ]
 
-    def evaluate_formula(
-        self,
-        horizon: str,
-        weights: FormulaWeights,
-        formula_version: str,
-    ) -> dict:
-        weight_map = weights.model_dump()
-        quality = (
-            weights.momentum * 0.20
-            + weights.relative_strength * 0.25
-            + weights.trend_quality * 0.14
-            + weights.volume_confirmation * 0.08
-            - abs(weights.volatility) * 0.05
-        )
-        direction_accuracy = min(0.648, max(0.491, 0.543 + quality / 28))
-        spread = min(0.059, 0.017 + quality / 42)
-        information_coefficient = min(0.14, 0.027 + quality / 15)
-        result = {
-            "status": "complete",
-            "scope": "demo-validation",
-            "holdout_status": "locked",
-            "horizon": horizon,
-            "formula_version": formula_version,
-            "metrics": {
-                "direction_accuracy": direction_accuracy,
-                "always_up_baseline": 0.537,
-                "top_bottom_relative_spread": spread,
-                "spearman_ic": information_coefficient,
-                "max_drawdown": -0.081,
-                "turnover": 0.22,
-            },
-            "decile_relative_returns": [
-                -0.018,
-                -0.012,
-                -0.008,
-                -0.003,
-                0.001,
-                0.004,
-                0.008,
-                0.012,
-                0.017,
-                0.025,
-            ],
-            "warnings": [
-                "Illustrative demo data is not evidence of a tradeable edge.",
-                "The final time holdout remains locked.",
-            ],
+    def run_backtest(self, horizon_sessions: int) -> dict:
+        histories = {
+            symbol: self.repository.list_bars(symbol)
+            for symbol in self.repository.list_symbols()
         }
-        experiment_id = self.repository.append_experiment(
-            formula_version=formula_version,
-            horizon=horizon,
-            weights=weight_map,
+        histories = {
+            symbol: bars
+            for symbol, bars in histories.items()
+            if len(bars) >= 61 + horizon_sessions
+        }
+        result = walk_forward_backtest(
+            histories,
+            horizon_sessions=horizon_sessions,
+        )
+        backtest_id = self.repository.append_backtest(
+            metric_version=METRIC_VERSION,
+            horizon_sessions=horizon_sessions,
+            symbols=sorted(histories),
+            parameters={
+                "rebalance_every_sessions": 5,
+                "execution": "signal close to future close",
+                "version": BACKTEST_VERSION,
+            },
             result=result,
         )
-        return {"experiment_id": experiment_id, **result}
+        return {"backtest_id": backtest_id, **result}
 
     def predictions(
         self,
@@ -183,55 +329,46 @@ class PrismService:
         horizon: Literal["10D", "30D", "90D"],
         formula_version: str,
     ) -> dict:
-        stock = DEMO_STOCKS[symbol]
-        score = stock[f"score_{horizon.lower()}"]
-        direction = "Bullish" if score >= 60 else "Bearish" if score < 45 else "Neutral"
-        expected_range = {
-            "Bullish": "+0.8% to +5.0%",
-            "Neutral": "-2.0% to +2.0%",
-            "Bearish": "-5.0% to +0.8%",
-        }[direction]
         detail = self.stock_detail(symbol)
+        if detail is None:
+            raise ValueError("No stored market data exists for this symbol")
+        score = detail[{"10D": "score10", "30D": "score30", "90D": "score90"}[horizon]]
+        direction = "Bullish" if score >= 60 else "Bearish" if score < 40 else "Neutral"
         created_at = datetime.now(UTC)
         return self.repository.append_prediction(
             {
                 "created_at": created_at.isoformat(),
-                "data_cutoff": self.data_cutoff.isoformat(),
+                "data_cutoff": detail["data_cutoff"],
                 "symbol": symbol,
                 "horizon": horizon,
                 "direction": direction,
-                "confidence": stock["confidence"],
-                "expected_range": expected_range,
+                "confidence": abs(score - 50) * 2,
+                "expected_range": "Not calibrated",
                 "actual_outcome": "Pending",
                 "outcome": "Pending",
                 "formula_version": formula_version,
                 "metric_version": detail["metric_version"],
                 "input_snapshot": {
                     "metrics": detail["metrics"],
-                    "max_source_available_at": detail["max_source_available_at"],
-                    "prediction_cutoff": detail["prediction_cutoff"],
-                    "provider": self.provider_name,
+                    "scores": {
+                        "10D": detail["score10"],
+                        "30D": detail["score30"],
+                        "90D": detail["score90"],
+                    },
+                    "data_cutoff": detail["data_cutoff"],
+                    "provider": detail["source"],
                 },
             }
         )
 
     def pipeline_status(self) -> dict:
+        summary = self.repository.market_summary()
         return {
-            "status": "healthy",
-            "mode": "demo",
-            "data_cutoff": self.data_cutoff.isoformat(),
-            "steps": [
-                {"name": "raw_ingest", "status": "ready", "version": "demo-v0.1"},
-                {"name": "temporal_audit", "status": "ready", "version": "v0.1"},
-                {"name": "metrics", "status": "ready", "version": "price-core-v0.1"},
-                {"name": "labels", "status": "isolated", "version": "v0.1"},
-                {"name": "formula", "status": "candidate", "version": "core-v0.1"},
-                {"name": "ledger", "status": "append-only", "version": "v0.1"},
-            ],
-            "guarantees": {
-                "source_availability_checked": True,
-                "same_close_execution_forbidden": True,
-                "predictions_append_only": True,
-                "holdout_locked": True,
-            },
+            "status": "ready" if summary["bar_count"] else "empty",
+            "provider": self.provider_name,
+            "provider_configured": self.provider_configured,
+            "market": summary,
+            "sync_runs": self.repository.list_sync_runs(),
+            "backtests": self.repository.list_backtests(),
+            "metric_version": METRIC_VERSION,
         }

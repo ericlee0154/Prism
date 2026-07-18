@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -53,7 +54,20 @@ class MassiveMarketDataProvider(MarketDataProvider):
         owns_client = self.client is None
         client = self.client or httpx.Client(timeout=15.0)
         try:
-            response = client.get(url, params=parameters)
+            response: httpx.Response | None = None
+            for attempt in range(3):
+                response = client.get(url, params=parameters)
+                if response.status_code != 429:
+                    break
+                retry_after = response.headers.get("Retry-After")
+                wait_seconds = (
+                    min(65.0, max(1.0, float(retry_after)))
+                    if retry_after
+                    else 15.0 * (attempt + 1)
+                )
+                time.sleep(wait_seconds)
+            if response is None:
+                raise RuntimeError("Massive returned no response")
             response.raise_for_status()
             payload: dict[str, Any] = response.json()
         except (httpx.HTTPError, ValueError) as error:

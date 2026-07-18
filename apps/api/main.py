@@ -8,14 +8,15 @@ from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from packages.prism_core.repository import PrismRepository
-from packages.prism_core.seed import DEMO_STOCKS
-from packages.prism_core.service import FormulaWeights, PrismService
+from packages.prism_core.service import PrismService
 
 
 ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
 DATABASE_PATH = Path(
     os.getenv("PRISM_DATABASE_PATH", ROOT / "data" / "prism.duckdb")
 )
@@ -34,7 +35,6 @@ async def lifespan(application: FastAPI):
     repository = create_repository()
     repository.initialize()
     service = PrismService(repository)
-    service.ensure_demo_data()
     application.state.repository = repository
     application.state.service = service
     yield
@@ -53,10 +53,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
@@ -66,27 +63,32 @@ Service = Annotated[PrismService, Depends(get_service)]
 Horizon = Literal["10D", "30D", "90D"]
 
 
-class FormulaRequest(BaseModel):
-    horizon: Horizon = "30D"
-    weights: FormulaWeights
-    formula_version: str = Field(default="candidate-v0.1", min_length=1, max_length=80)
-
-
 class SealPredictionRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=12)
     horizon: Horizon = "30D"
     formula_version: str = Field(default="core-v0.1", min_length=1, max_length=80)
 
 
+class SyncRequest(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=100)
+    years: int = Field(default=2, ge=1, le=20)
+
+
+class BacktestRequest(BaseModel):
+    horizon_sessions: Literal[10, 30, 90] = 30
+
+
 @app.get("/api/v1/health")
 def health(service: Service) -> dict:
+    summary = service.repository.market_summary()
     return {
         "status": "ok",
         "service": "prism-api",
         "version": app.version,
         "provider": service.provider_name,
-        "mode": "demo" if service.is_demo else "live",
-        "data_cutoff": service.data_cutoff.isoformat(),
+        "provider_configured": service.provider_configured,
+        "mode": "live" if summary["bar_count"] else "empty",
+        "data_cutoff": summary["data_cutoff"],
         "database": str(DATABASE_PATH),
         "server_time": datetime.now(UTC).isoformat(),
     }
@@ -103,9 +105,10 @@ def scanner(
     horizon: Horizon = Query(default="30D"),
     search: str = Query(default="", max_length=80),
 ) -> dict:
+    summary = service.repository.market_summary()
     return {
         "horizon": horizon,
-        "data_cutoff": service.data_cutoff.isoformat(),
+        "data_cutoff": summary["data_cutoff"],
         "provider": service.provider_name,
         "items": service.scan(horizon=horizon, search=search),
     }
@@ -124,15 +127,6 @@ def metric_catalog(service: Service) -> dict:
     return {"items": service.metric_catalog()}
 
 
-@app.post("/api/v1/formulas/evaluate")
-def evaluate_formula(request: FormulaRequest, service: Service) -> dict:
-    return service.evaluate_formula(
-        horizon=request.horizon,
-        weights=request.weights,
-        formula_version=request.formula_version,
-    )
-
-
 @app.get("/api/v1/predictions")
 def predictions(
     service: Service,
@@ -145,13 +139,14 @@ def predictions(
 @app.post("/api/v1/predictions/seal", status_code=201)
 def seal_prediction(request: SealPredictionRequest, service: Service) -> dict:
     symbol = request.symbol.upper()
-    if symbol not in DEMO_STOCKS:
-        raise HTTPException(status_code=404, detail=f"Unknown symbol: {symbol}")
-    return service.seal_prediction(
-        symbol=symbol,
-        horizon=request.horizon,
-        formula_version=request.formula_version,
-    )
+    try:
+        return service.seal_prediction(
+            symbol=symbol,
+            horizon=request.horizon,
+            formula_version=request.formula_version,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.get("/api/v1/pipeline")
@@ -160,15 +155,23 @@ def pipeline(service: Service) -> dict:
 
 
 @app.post("/api/v1/sync")
-def sync_demo(service: Service) -> dict:
-    service.ensure_demo_data(force=True)
-    return {
-        "status": "complete",
-        "provider": service.provider_name,
-        "mode": "demo",
-        "symbols": len(DEMO_STOCKS),
-        "data_cutoff": service.data_cutoff.isoformat(),
-    }
+def sync_market_data(request: SyncRequest, service: Service) -> dict:
+    try:
+        return service.sync_market_data(request.symbols, request.years)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/v1/backtests", status_code=201)
+def create_backtest(request: BacktestRequest, service: Service) -> dict:
+    return service.run_backtest(request.horizon_sessions)
+
+
+@app.get("/api/v1/backtests")
+def list_backtests(service: Service) -> dict:
+    return {"items": service.repository.list_backtests()}
 
 
 @app.get("/")

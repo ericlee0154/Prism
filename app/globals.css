@@ -205,11 +205,49 @@ textarea:focus-visible {
   box-shadow: 0 0 0 4px rgba(200, 240, 106, 0.11);
 }
 
+.status-dot-empty {
+  background: #6f857c;
+  box-shadow: none;
+}
+
 .data-card-copy {
   margin: 9px 0 0;
   color: #82968d;
   font-size: 11px;
   line-height: 1.55;
+}
+
+.empty-market {
+  min-height: 280px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 14px;
+  padding: 48px;
+  text-align: center;
+}
+
+.empty-market h2,
+.empty-market p {
+  margin: 0;
+}
+
+.empty-market p {
+  max-width: 620px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.summary-date {
+  font-size: clamp(20px, 2vw, 29px);
+}
+
+.data-sync-grid {
+  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+}
+
+.storage-fields {
+  padding: 4px 2px;
 }
 
 .sidebar-footer {

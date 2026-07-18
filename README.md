@@ -1,137 +1,107 @@
 # Prism
 
-Prism is a personal, point-in-time market research workbench. It ranks a
-comparable stock universe, explains the drivers behind each score, lets a
-researcher test versioned formulas, and records forward predictions in an
-append-only, hash-linked ledger.
+Prism is a local-only, point-in-time market research workbench. It downloads
+real adjusted daily stock bars from Massive, stores them in DuckDB, derives
+versioned metrics, and runs walk-forward research diagnostics.
 
-Prism is a research tool. It does not place trades and does not provide
-investment advice.
+Prism does not place trades. It has no order, cancel-order, or brokerage
+execution path.
 
-## What is included
+## Data truth policy
 
-- Research overview with regime, coverage, performance, and data freshness.
-- Searchable, filterable, sortable multi-horizon market scanner.
-- Symbol detail with signal explanation, driver percentiles, horizon
-  comparison, and temporal-integrity status.
-- Durable personal watchlist.
-- Formula lab with bounded weights, versioned drafts, walk-forward validation,
-  baseline comparison, deciles, IC, drawdown, turnover, and locked holdout.
-- Append-only prediction ledger with a SHA-256 content and predecessor chain.
-- CSV and JSON Lines exports.
-- Data center with provider status, synchronization history, pipeline versions,
-  and audit activity.
-- Deterministic demo provider and a working Massive daily-bar adapter.
-- D1 persistence for watchlists, formulas, experiments, predictions, sync
-  history, and activity.
-- Optional ChatGPT/workspace identity. Anonymous production visitors are
-  read-only; authenticated users receive isolated personal records.
-- Python research core and FastAPI surface for local quantitative work.
-
-The full acceptance checklist is in [PRODUCT_SCOPE.md](./PRODUCT_SCOPE.md).
+- Runtime demo data does not exist.
+- An empty database produces an empty UI.
+- Provider failures never substitute sample prices, scores, or backtests.
+- Previously stored real data remains available and is visibly timestamped.
+- Every displayed market value names its provider and availability cutoff.
+- Test fixtures exist only inside tests and are never loaded by the application.
 
 ## Architecture
 
 ```text
-Vinext / React UI
-       |
-       +-- /api/prism -------- D1 personal workspace
-       |
-       +-- deterministic market domain and formula evaluator
-
-Python FastAPI (local research surface)
-       |
-       +-- prism_core -------- metrics, providers, repository, service
-       |
-       +-- DuckDB ------------ local append-only research records
+React / Vinext UI (local browser)
+              |
+              +-- FastAPI on 127.0.0.1:8000
+                         |
+                         +-- Massive adjusted daily bars
+                         +-- point-in-time metrics
+                         +-- walk-forward backtests
+                         +-- local DuckDB
 ```
 
-The hosted application uses Cloudflare-compatible Vinext and D1. The Python
-surface is intentionally local: it is useful for deeper metric development and
-provider validation without putting a Python service in the hosted request
-path.
+The Massive key is read only by FastAPI from the local process environment.
+It is never sent to the browser and must not use a `NEXT_PUBLIC_*` name.
 
 ## Requirements
 
 - Node.js 22.13 or newer
 - Python 3.12 or newer
+- A Massive API key
 
 ## Setup
 
 ```bash
 make setup
+cp .env.example .env
+```
+
+Set the key in the ignored `.env`:
+
+```dotenv
+MASSIVE_API_KEY=your-key
+PRISM_DATABASE_PATH=./data/prism.duckdb
+```
+
+Then start both local processes:
+
+```bash
 make dev
 ```
 
-`make dev` starts the local FastAPI research API on port 8000 and the Vinext
-application on its printed local URL.
+Open the local URL printed by Vinext. In **Data & pipeline**, enter the exact
+symbols and history length you want, then synchronize. Prism does not create a
+default symbol universe.
 
-The web application works end-to-end with deterministic demo data and no API
-keys. Local development uses an isolated local-researcher identity so durable
-write flows can be exercised without production authentication.
+## Current metrics
 
-## Useful commands
+The `price-core-v0.1` snapshot derives:
 
-```bash
-npm run dev          # web development server
-npm run build        # production Worker build
-npm run lint         # TypeScript and React static checks
-npm test             # production build and web contract tests
-npm run db:generate  # generate D1 migration after schema changes
+- 5-session return
+- 20-session return
+- annualized 20-session realized volatility
+- 20-session volume z-score
+- distance from the 20-session moving average
+- trailing 60-session drawdown
 
-.venv/bin/python -m pytest -q
-make test             # Python and web test suites
-make api              # FastAPI only
-```
+The scanner ranks only the symbols currently present in DuckDB. The
+walk-forward baseline evaluates 10, 30, or 90 future sessions at five-session
+rebalance intervals and reports observation count, Spearman IC, top-minus-
+bottom spread, and directional accuracy. Results exclude fees, slippage, taxes,
+borrow costs, and survivorship corrections.
 
-## Data providers
-
-Demo mode is the default and is always labelled in the UI. To use the local
-Massive daily aggregate adapter, set `MASSIVE_API_KEY` in an ignored `.env`
-file or the shell environment. Never expose provider keys through
-`NEXT_PUBLIC_*` variables.
-
-The adapter uses Massive's official custom-bars endpoint, requests adjusted
-daily data, enforces a timeout, and assigns a conservative post-close
-availability time before metrics may consume a bar.
-
-Other variables in `.env.example` are reserved integration boundaries. They do
-not imply that credentials are present or that unsupported live data is shown.
-
-## Local research API
-
-The FastAPI service exposes:
+## Local API
 
 - `GET /api/v1/health`
 - `GET /api/v1/overview`
 - `GET /api/v1/scanner`
 - `GET /api/v1/stocks/{symbol}`
 - `GET /api/v1/metrics/catalog`
-- `POST /api/v1/formulas/evaluate`
+- `POST /api/v1/sync`
+- `GET /api/v1/pipeline`
+- `POST /api/v1/backtests`
+- `GET /api/v1/backtests`
 - `GET /api/v1/predictions`
 - `POST /api/v1/predictions/seal`
-- `GET /api/v1/pipeline`
-- `POST /api/v1/sync`
 
-Interactive API documentation is available at `/docs` while the service runs.
+Interactive documentation is available at
+`http://127.0.0.1:8000/docs` while the API is running.
 
-## Temporal integrity
+## Validation
 
-Every market bar carries both an observation timestamp and an availability
-timestamp. A metric snapshot rejects any input that was not available by its
-prediction cutoff. Sealed predictions store the exact metric snapshot, data
-cutoff, formula version, metric version, content hash, and previous-record
-hash.
+```bash
+make test
+npm run lint
+npx tsc --noEmit
+```
 
-The final holdout is deliberately represented as locked. Formula experiments
-are saved separately and never rewrite predictions.
-
-## Authentication and privacy
-
-Production writes require the platform-provided ChatGPT/workspace identity.
-The server derives an opaque owner key from the authenticated email and applies
-it to every personal query. Identity and authorization checks happen on the
-server; client controls are not trusted.
-
-The app never stores provider credentials in D1 or sends them to the browser.
-Hosted runtime variables belong in the Sites environment configuration.
+Downloaded data and DuckDB files are ignored by Git.

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import duckdb
 
-from .seed import DEMO_CUTOFF, DEMO_LEDGER
+from .models import Bar
 
 
 class PrismRepository:
@@ -20,6 +20,50 @@ class PrismRepository:
         self.connection = duckdb.connect(str(database_path))
 
     def initialize(self) -> None:
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS market_bars (
+                symbol VARCHAR NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
+                available_at TIMESTAMPTZ NOT NULL,
+                open DOUBLE NOT NULL,
+                high DOUBLE NOT NULL,
+                low DOUBLE NOT NULL,
+                close DOUBLE NOT NULL,
+                volume DOUBLE NOT NULL,
+                source VARCHAR NOT NULL,
+                fetched_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (symbol, timestamp, source)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_runs (
+                sync_id VARCHAR PRIMARY KEY,
+                started_at TIMESTAMPTZ NOT NULL,
+                completed_at TIMESTAMPTZ,
+                provider VARCHAR NOT NULL,
+                symbols_json VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                rows_written BIGINT NOT NULL,
+                error VARCHAR
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backtest_runs (
+                backtest_id VARCHAR PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL,
+                metric_version VARCHAR NOT NULL,
+                horizon_sessions INTEGER NOT NULL,
+                symbols_json VARCHAR NOT NULL,
+                parameters_json VARCHAR NOT NULL,
+                result_json VARCHAR NOT NULL
+            )
+            """
+        )
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS predictions (
@@ -52,38 +96,218 @@ class PrismRepository:
             )
             """
         )
+        # Remove records created by the retired deterministic demo provider.
+        # Real provider failures must leave the workspace empty or stale, never
+        # silently repopulate it with fixtures.
+        self.connection.execute(
+            "DELETE FROM predictions WHERE input_snapshot_json LIKE '%demo-seed%'"
+        )
+        self.connection.execute(
+            "DELETE FROM formula_experiments WHERE result_json LIKE '%demo-%'"
+        )
 
-    def seed_ledger(self, force: bool = False) -> None:
-        count = self.connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
-        if count and not force:
-            return
-        if force:
-            self.connection.execute(
-                "DELETE FROM predictions WHERE formula_version = 'core-v0.1'"
+    def begin_sync(self, provider: str, symbols: list[str]) -> str:
+        sync_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO sync_runs
+            (sync_id, started_at, provider, symbols_json, status, rows_written)
+            VALUES (?, ?, ?, ?, 'running', 0)
+            """,
+            [sync_id, datetime.now().astimezone(), provider, json.dumps(symbols)],
+        )
+        return sync_id
+
+    def finish_sync(
+        self,
+        sync_id: str,
+        *,
+        status: str,
+        rows_written: int,
+        error: str | None = None,
+    ) -> None:
+        self.connection.execute(
+            """
+            UPDATE sync_runs
+            SET completed_at = ?, status = ?, rows_written = ?, error = ?
+            WHERE sync_id = ?
+            """,
+            [datetime.now().astimezone(), status, rows_written, error, sync_id],
+        )
+
+    def upsert_bars(self, bars: list[Bar]) -> int:
+        if not bars:
+            return 0
+        fetched_at = datetime.now().astimezone()
+        self.connection.executemany(
+            """
+            INSERT OR REPLACE INTO market_bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                [
+                    bar.symbol,
+                    bar.timestamp,
+                    bar.available_at,
+                    bar.open,
+                    bar.high,
+                    bar.low,
+                    bar.close,
+                    float(bar.volume),
+                    bar.source,
+                    fetched_at,
+                ]
+                for bar in bars
+            ],
+        )
+        return len(bars)
+
+    def list_symbols(self) -> list[str]:
+        return [
+            str(row[0])
+            for row in self.connection.execute(
+                "SELECT DISTINCT symbol FROM market_bars ORDER BY symbol"
+            ).fetchall()
+        ]
+
+    def list_bars(
+        self,
+        symbol: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[Bar]:
+        clauses = ["symbol = ?"]
+        parameters: list[Any] = [symbol.upper()]
+        if start is not None:
+            clauses.append("timestamp >= ?")
+            parameters.append(start)
+        if end is not None:
+            clauses.append("timestamp <= ?")
+            parameters.append(end)
+        cursor = self.connection.execute(
+            f"""
+            SELECT symbol, timestamp, available_at, open, high, low, close,
+                   volume, source
+            FROM market_bars
+            WHERE {' AND '.join(clauses)}
+            ORDER BY timestamp
+            """,
+            parameters,
+        )
+        return [
+            Bar(
+                symbol=str(row[0]),
+                timestamp=row[1],
+                available_at=row[2],
+                open=float(row[3]),
+                high=float(row[4]),
+                low=float(row[5]),
+                close=float(row[6]),
+                volume=int(row[7]),
+                source=str(row[8]),
             )
-        for row in DEMO_LEDGER:
-            created_at, symbol, horizon, direction, confidence, expected, actual, outcome, version = row
-            created_timestamp = datetime.fromisoformat(created_at)
-            historical_cutoff = min(
-                created_timestamp.replace(minute=0, second=0, microsecond=0),
-                DEMO_CUTOFF,
-            )
-            self.append_prediction(
-                {
-                    "created_at": created_at,
-                    "data_cutoff": historical_cutoff,
-                    "symbol": symbol,
-                    "horizon": horizon,
-                    "direction": direction,
-                    "confidence": confidence,
-                    "expected_range": expected,
-                    "actual_outcome": actual,
-                    "outcome": outcome,
-                    "formula_version": version,
-                    "metric_version": "price-core-v0.1",
-                    "input_snapshot": {"provider": "demo-seed", "sealed": True},
-                }
-            )
+            for row in cursor.fetchall()
+        ]
+
+    def market_summary(self) -> dict[str, Any]:
+        row = self.connection.execute(
+            """
+            SELECT
+                COUNT(*) AS bar_count,
+                COUNT(DISTINCT symbol) AS symbol_count,
+                MIN(timestamp) AS first_observation,
+                MAX(timestamp) AS last_observation,
+                MAX(available_at) AS data_cutoff,
+                MAX(fetched_at) AS last_synced_at
+            FROM market_bars
+            """
+        ).fetchone()
+        return {
+            "bar_count": int(row[0] or 0),
+            "symbol_count": int(row[1] or 0),
+            "first_observation": row[2].isoformat() if row[2] else None,
+            "last_observation": row[3].isoformat() if row[3] else None,
+            "data_cutoff": row[4].isoformat() if row[4] else None,
+            "last_synced_at": row[5].isoformat() if row[5] else None,
+            "database_bytes": (
+                self.database_path.stat().st_size
+                if self.database_path.exists()
+                else 0
+            ),
+        }
+
+    def list_sync_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        cursor = self.connection.execute(
+            """
+            SELECT sync_id, started_at, completed_at, provider, symbols_json,
+                   status, rows_written, error
+            FROM sync_runs
+            ORDER BY started_at DESC
+            LIMIT ?
+            """,
+            [limit],
+        )
+        return [
+            {
+                "sync_id": row[0],
+                "started_at": row[1].isoformat(),
+                "completed_at": row[2].isoformat() if row[2] else None,
+                "provider": row[3],
+                "symbols": json.loads(row[4]),
+                "status": row[5],
+                "rows_written": int(row[6]),
+                "error": row[7],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def append_backtest(
+        self,
+        *,
+        metric_version: str,
+        horizon_sessions: int,
+        symbols: list[str],
+        parameters: dict[str, Any],
+        result: dict[str, Any],
+    ) -> str:
+        backtest_id = str(uuid4())
+        self.connection.execute(
+            "INSERT INTO backtest_runs VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                backtest_id,
+                datetime.now().astimezone(),
+                metric_version,
+                horizon_sessions,
+                json.dumps(symbols, sort_keys=True),
+                json.dumps(parameters, sort_keys=True),
+                json.dumps(result, sort_keys=True),
+            ],
+        )
+        return backtest_id
+
+    def list_backtests(self, limit: int = 20) -> list[dict[str, Any]]:
+        cursor = self.connection.execute(
+            """
+            SELECT backtest_id, created_at, metric_version, horizon_sessions,
+                   symbols_json, parameters_json, result_json
+            FROM backtest_runs
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [limit],
+        )
+        return [
+            {
+                "backtest_id": row[0],
+                "created_at": row[1].isoformat(),
+                "metric_version": row[2],
+                "horizon_sessions": int(row[3]),
+                "symbols": json.loads(row[4]),
+                "parameters": json.loads(row[5]),
+                "result": json.loads(row[6]),
+            }
+            for row in cursor.fetchall()
+        ]
 
     def append_prediction(self, record: dict[str, Any]) -> dict[str, Any]:
         prediction_id = str(uuid4())
