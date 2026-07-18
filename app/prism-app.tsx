@@ -226,6 +226,54 @@ type RangeAnalysis = {
   scheduled_events: ResearchEvent[];
   series: { date: string; close: number }[];
 };
+type MetricDefinition = {
+  name: string;
+  display_name: string;
+  display_name_zh: string;
+  description: string;
+  description_zh: string;
+  formula: string;
+  required_inputs: string[];
+  output_type: string;
+  unit: string;
+  version: string;
+};
+type ScoreTerm = {
+  key: string;
+  metric: string;
+  weight: number;
+  label: string;
+  label_zh: string;
+  description: string;
+  description_zh: string;
+  transform: string;
+  invert_percentile: boolean;
+};
+type ScoreHorizon = {
+  horizon: string;
+  metric: string | null;
+  amplitude: number;
+  scale: number;
+  label: string;
+  label_zh: string;
+  formula: string;
+};
+type ScoreModel = {
+  id: string;
+  version: string;
+  label: string;
+  label_zh: string;
+  description: string;
+  description_zh: string;
+  formula: string;
+  base_formula?: string;
+  terms: ScoreTerm[];
+  horizons: ScoreHorizon[];
+};
+type MetricCatalog = {
+  items: MetricDefinition[];
+  score_models: ScoreModel[];
+};
 type Backtest = {
   backtest_id: string;
   created_at?: string;
@@ -362,6 +410,25 @@ const translations = {
   endDate: { zh: "結束日期", en: "End date" },
   calculating: { zh: "計算中…", en: "Calculating…" },
   autoCalculate: { zh: "選項變更後自動重算", en: "Recalculates automatically after changes" },
+  analysisTab: { zh: "區間分析", en: "Range analysis" },
+  methodologyTab: { zh: "Metrics 方法與權重", en: "Metrics methodology & weights" },
+  liveMetrics: { zh: "目前區間數值", en: "Current range values" },
+  formula: { zh: "公式", en: "Formula" },
+  inputs: { zh: "輸入", en: "Inputs" },
+  weight: { zh: "權重", en: "Weight" },
+  scoreModels: { zh: "分數模型", en: "Score models" },
+  rawMetrics: { zh: "原始 Metrics", en: "Raw metrics" },
+  implementationSource: { zh: "實作唯一來源", en: "Single implementation source" },
+  implementationSourceCopy: {
+    zh: "以下公式與權重由後端實際計算所迭代的同一組定義產生；前端不另外保存權重副本。",
+    en: "These formulas and weights are serialized from the same definitions iterated by the backend calculations; the frontend keeps no separate weight copy.",
+  },
+  scoreDistinction: {
+    zh: "掃描分數與 Walk-forward 特徵分數用途不同，請勿直接互相比較。",
+    en: "The scanner score and walk-forward feature score serve different purposes and are not directly comparable.",
+  },
+  horizonAdjustment: { zh: "期間調整", en: "Horizon adjustment" },
+  noMetricCatalog: { zh: "Metrics 方法資料目前無法取得；不顯示替代內容。", en: "Metric methodology is unavailable; no substitute content is shown." },
   shiftRange: { zh: "平移整段時間", en: "Shift the whole range" },
   shiftDays: { zh: "天", en: "days" },
   moveEarlier: { zh: "往左移", en: "Move earlier" },
@@ -750,6 +817,66 @@ function Header({ eyebrow, title, copy, children }: { eyebrow: string; title: st
   return <div className="page-heading"><div><p className="eyebrow">{eyebrow}</p><h1 className="page-title">{title}</h1><p className="page-copy">{copy}</p></div>{children ? <div className="heading-actions">{children}</div> : null}</div>;
 }
 
+function MetricLabel({
+  children,
+  definition,
+  scoreModel,
+}: {
+  children: React.ReactNode;
+  definition?: MetricDefinition;
+  scoreModel?: ScoreModel;
+}) {
+  const { language, t } = useI18n();
+  const description = definition
+    ? (language === "zh" ? definition.description_zh : definition.description)
+    : scoreModel
+      ? (language === "zh" ? scoreModel.description_zh : scoreModel.description)
+      : "";
+  const formula = definition?.formula ?? scoreModel?.formula;
+  return <span className="metric-label-with-help">
+    <span>{children}</span>
+    {(description || formula) && <span className="metric-info-trigger" tabIndex={0} title={[description, formula].filter(Boolean).join("\n")} aria-label={`${children}: ${description}`}>
+      i
+      <span className="metric-tooltip" role="tooltip">
+        {description && <span>{description}</span>}
+        {formula && <code><b>{t("formula")}</b>{language === "zh" ? "：" : ": "}{formula}</code>}
+      </span>
+    </span>}
+  </span>;
+}
+
+function MetricsMethodology({ catalog }: { catalog: MetricCatalog | null }) {
+  const { language, t } = useI18n();
+  if (!catalog) return <div className="panel empty-market"><p>{t("noMetricCatalog")}</p></div>;
+  return <div className="methodology-stack">
+    <div className="methodology-source">
+      <span className="tiny-badge live">{t("implementationSource")}</span>
+      <p>{t("implementationSourceCopy")}</p>
+    </div>
+    <section className="panel methodology-panel">
+      <div className="panel-header"><div><h2 className="panel-title">{t("rawMetrics")}</h2><p className="panel-subtitle">{catalog.items[0]?.version ?? "—"}</p></div></div>
+      <div className="metric-definition-grid">{catalog.items.map((metric) => <article className="metric-definition-card" key={metric.name}>
+        <div className="metric-definition-heading"><div><strong>{language === "zh" ? metric.display_name_zh : metric.display_name}</strong><code>{metric.name}</code></div><span className="tiny-badge">{metric.unit}</span></div>
+        <p>{language === "zh" ? metric.description_zh : metric.description}</p>
+        <div className="formula-block"><span>{t("formula")}</span><code>{metric.formula}</code></div>
+        <div className="metric-definition-meta"><span>{t("inputs")}</span><strong className="mono">{metric.required_inputs.join(", ")}</strong></div>
+      </article>)}</div>
+    </section>
+    <section className="panel methodology-panel">
+      <div className="panel-header"><div><h2 className="panel-title">{t("scoreModels")}</h2><p className="panel-subtitle">{t("scoreDistinction")}</p></div></div>
+      <div className="score-model-list">{catalog.score_models.map((model) => <article className="score-model-card" key={model.id}>
+        <div className="score-model-heading"><div><h3>{language === "zh" ? model.label_zh : model.label}</h3><p>{language === "zh" ? model.description_zh : model.description}</p></div><span className="tiny-badge">{model.version}</span></div>
+        <div className="formula-block"><span>{t("formula")}</span><code>{model.formula}</code>{model.base_formula && <code>{model.base_formula}</code>}</div>
+        <div className="weight-table">{model.terms.map((term) => <div className="weight-term" key={term.key}>
+          <div><strong>{language === "zh" ? term.label_zh : term.label}</strong><code>{term.key}</code><p>{language === "zh" ? term.description_zh : term.description}</p></div>
+          <span className={`weight-chip ${term.weight < 0 ? "negative" : ""}`}>{t("weight")} {(term.weight * 100).toFixed(0)}%</span>
+        </div>)}</div>
+        {model.horizons.length > 0 && <div className="horizon-methods"><strong>{t("horizonAdjustment")}</strong><div>{model.horizons.map((horizon) => <span key={horizon.horizon}><b>{horizon.horizon}</b><small>{language === "zh" ? horizon.label_zh : horizon.label}</small><code>{horizon.formula}</code></span>)}</div></div>}
+      </article>)}</div>
+    </section>
+  </div>;
+}
+
 function EmptyMarket({ onOpenData }: { onOpenData: () => void }) {
   const { t } = useI18n();
   return <div className="panel empty-market"><span className="tiny-badge">{t("emptyByDesign")}</span><h2>{t("noStoredMarketData")}</h2><p>{t("emptyExplanation")}</p><button className="primary-button" onClick={onOpenData}>{t("openDataSync")}</button></div>;
@@ -774,10 +901,12 @@ function SummaryCards({ overview }: { overview: Overview }) {
   </div>;
 }
 
-function StockTable({ stocks, active, setActive, horizon, search }: { stocks: Stock[]; active: Stock | null; setActive: (stock: Stock) => void; horizon: Horizon; search: string }) {
+function StockTable({ stocks, active, setActive, horizon, search, catalog }: { stocks: Stock[]; active: Stock | null; setActive: (stock: Stock) => void; horizon: Horizon; search: string; catalog: MetricCatalog | null }) {
   const { t } = useI18n();
   const visible = useMemo(() => stocks.filter((stock) => stock.symbol.includes(search.trim().toUpperCase())).sort((a, b) => scoreFor(b, horizon) - scoreFor(a, horizon)), [stocks, search, horizon]);
-  return <div className="table-wrap"><table className="data-table"><thead><tr><th>{t("symbol")}</th><th>{t("latestClose")}</th><th>{t("return5")}</th><th>{t("return20")}</th><th>{t("volatility20")}</th><th>{t("drawdown60")}</th><th>{horizon} {t("score")}</th><th>{t("rows")}</th></tr></thead><tbody>
+  const metric = (name: string) => catalog?.items.find((item) => item.name === name);
+  const scannerModel = catalog?.score_models.find((item) => item.id === "scanner_relative_score");
+  return <div className="table-wrap"><table className="data-table"><thead><tr><th>{t("symbol")}</th><th>{t("latestClose")}</th><th><MetricLabel definition={metric("return_5d")}>{t("return5")}</MetricLabel></th><th><MetricLabel definition={metric("return_20d")}>{t("return20")}</MetricLabel></th><th><MetricLabel definition={metric("realized_volatility_20d")}>{t("volatility20")}</MetricLabel></th><th><MetricLabel definition={metric("drawdown_60d")}>{t("drawdown60")}</MetricLabel></th><th><MetricLabel scoreModel={scannerModel}>{horizon} {t("score")}</MetricLabel></th><th>{t("rows")}</th></tr></thead><tbody>
     {visible.map((stock) => <tr key={stock.symbol} className={active?.symbol === stock.symbol ? "selected" : ""} onClick={() => setActive(stock)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setActive(stock); }}>
       <td><strong>{stock.symbol}</strong><div className="company-name">{stock.source}</div></td>
       <td className="mono">${stock.price.toFixed(2)}<div className={stock.change != null && stock.change >= 0 ? "positive-text" : "negative-text"}>{stock.change == null ? "—" : `${stock.change >= 0 ? "+" : ""}${stock.change.toFixed(2)}%`}</div></td>
@@ -787,15 +916,15 @@ function StockTable({ stocks, active, setActive, horizon, search }: { stocks: St
   </tbody></table>{!visible.length && <div className="empty-state">{t("noMatch")}</div>}</div>;
 }
 
-function StockDetail({ stock, horizon }: { stock: Stock; horizon: Horizon }) {
+function StockDetail({ stock, horizon, catalog }: { stock: Stock; horizon: Horizon; catalog: MetricCatalog | null }) {
   const { t } = useI18n();
   const format = useFormatters();
   const score = scoreFor(stock, horizon);
   const signal = score >= 65 ? t("positiveSetup") : score <= 35 ? t("weakSetup") : t("neutralSetup");
   return <div className="panel detail-card">
     <div className="detail-hero"><div className="stock-identity"><div><h2 className="stock-symbol">{stock.symbol}</h2><div className="stock-sector">{stock.source} · {format.date(stock.last_observation)}</div></div><span className="tiny-badge live">{t("stored")}</span></div><div className="stock-price"><span className="price-main">${stock.price.toFixed(2)}</span><span className={stock.change != null && stock.change >= 0 ? "price-change" : "price-change negative-text"}>{stock.change == null ? "—" : `${stock.change >= 0 ? "+" : ""}${stock.change.toFixed(2)}%`}</span></div><div className="chart-area">{stock.bars.map((height, index) => <span className="chart-bar" style={{ height: `${height}%` }} key={index} />)}</div></div>
-    <div className="signal-block"><div className="signal-top"><span className="signal-label">{horizon} {t("relativeScore")}</span><span className="score-pill positive">{score.toFixed(1)}</span></div><div className="signal-status">{signal}</div><p className="signal-copy">{t("noFallback")}.</p></div>
-    <div className="driver-list"><p className="driver-title">{t("crossRanks")}</p><div className="driver"><span className="driver-dot" /><span>{t("momentum20")}</span><span className="driver-value">{stock.momentum.toFixed(1)}p</span></div><div className="driver"><span className="driver-dot" /><span>{t("relativeStrength")}</span><span className="driver-value">{stock.relativeStrength.toFixed(1)}p</span></div><div className="driver"><span className="driver-dot risk" /><span>{t("realizedVol")}</span><span className="driver-value">{stock.volatility.toFixed(1)}p</span></div></div>
+    <div className="signal-block"><div className="signal-top"><span className="signal-label"><MetricLabel scoreModel={catalog?.score_models.find((item) => item.id === "scanner_relative_score")}>{horizon} {t("relativeScore")}</MetricLabel></span><span className="score-pill positive">{score.toFixed(1)}</span></div><div className="signal-status">{signal}</div><p className="signal-copy">{t("noFallback")}.</p></div>
+    <div className="driver-list"><p className="driver-title">{t("crossRanks")}</p><div className="driver"><span className="driver-dot" /><MetricLabel definition={catalog?.items.find((item) => item.name === "return_20d")}>{t("momentum20")}</MetricLabel><span className="driver-value">{stock.momentum.toFixed(1)}p</span></div><div className="driver"><span className="driver-dot" /><MetricLabel scoreModel={catalog?.score_models.find((item) => item.id === "scanner_relative_score")}>{t("relativeStrength")}</MetricLabel><span className="driver-value">{stock.relativeStrength.toFixed(1)}p</span></div><div className="driver"><span className="driver-dot risk" /><MetricLabel definition={catalog?.items.find((item) => item.name === "realized_volatility_20d")}>{t("realizedVol")}</MetricLabel><span className="driver-value">{stock.volatility.toFixed(1)}p</span></div></div>
     <div className="snapshot-meta"><span>{t("metricVersion")}</span><strong className="mono">{stock.metric_version}</strong><span>{t("availableAt")}</span><strong>{format.date(stock.data_cutoff)}</strong><span>{t("dataQuality")}</span><strong>{stock.dataQuality.toFixed(0)}%</strong></div>
   </div>;
 }
@@ -1008,15 +1137,16 @@ function VolatilitySurfaceChart({ surface }: { surface: NonNullable<Backtest["vo
   </div>;
 }
 
-function MetricsView({ stocks }: { stocks: Stock[] }) {
+function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCatalog | null }) {
   const { language, t } = useI18n();
   const initialStock = stocks.find((stock) => stock.symbol === "AAPL") ?? stocks[0] ?? null;
   const [symbol, setSymbol] = useState(initialStock?.symbol ?? "");
   const selected = stocks.find((stock) => stock.symbol === symbol) ?? initialStock;
-  const minDay = dateToDay(DEFAULT_ANALYSIS_START);
-  const maxDay = dateToDay(DEFAULT_SYNC_END);
+  const minDay = selected ? dateToDay(selected.first_observation) : dateToDay(DEFAULT_ANALYSIS_START);
+  const maxDay = selected ? dateToDay(selected.last_observation) : dateToDay(DEFAULT_SYNC_END);
   const [startDay, setStartDay] = useState(selected ? dateToDay(selected.first_observation) : minDay);
   const [endDay, setEndDay] = useState(selected ? dateToDay(selected.last_observation) : maxDay);
+  const [tab, setTab] = useState<"analysis" | "methodology">("analysis");
   const [analysis, setAnalysis] = useState<RangeAnalysis | null>(null);
   const [running, setRunning] = useState(false);
   const [eventRefreshing, setEventRefreshing] = useState(false);
@@ -1072,16 +1202,23 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
   }, [run, selected]);
   const setStartDate = (value: string) => {
     const parsed = dateToDay(value);
-    if (Number.isFinite(parsed)) setStartDay(Math.min(parsed, endDay - 1));
+    if (Number.isFinite(parsed)) {
+      setAnalysis(null);
+      setStartDay(Math.min(parsed, endDay - 1));
+    }
   };
   const setEndDate = (value: string) => {
     const parsed = dateToDay(value);
-    if (Number.isFinite(parsed)) setEndDay(Math.max(parsed, startDay + 1));
+    if (Number.isFinite(parsed)) {
+      setAnalysis(null);
+      setEndDay(Math.max(parsed, startDay + 1));
+    }
   };
   const shiftRange = (direction: -1 | 1) => {
     const span = endDay - startDay;
     const requestedShift = direction * shiftDays;
     const shiftedStart = Math.max(minDay, Math.min(maxDay - span, startDay + requestedShift));
+    setAnalysis(null);
     setStartDay(shiftedStart);
     setEndDay(shiftedStart + span);
   };
@@ -1108,29 +1245,50 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
   const chartValues = analysis?.series.map((item) => item.close) ?? [];
   const chartLow = chartValues.length ? Math.min(...chartValues) : 0;
   const chartHigh = chartValues.length ? Math.max(...chartValues) : 1;
+  const metricDefinitions = useMemo(
+    () => new Map((catalog?.items ?? []).map((item) => [item.name, item])),
+    [catalog],
+  );
+  const liveMetricKeys = [
+    ["return_5d", t("return5"), "percent"],
+    ["return_20d", t("return20"), "percent"],
+    ["realized_volatility_20d", t("volatility20"), "percent"],
+    ["drawdown_60d", t("drawdown60"), "percent"],
+  ] as const;
 
   if (!selected) return <EmptyMarket onOpenData={() => undefined} />;
   return <div className="page-section">
     <Header eyebrow={t("rangeMetrics")} title={t("rangeMetricsTitle")} copy={t("rangeMetricsCopy")}>
       <label className="inline-control">{t("selectStock")}<select className="filter-select" value={selected.symbol} onChange={(event) => chooseSymbol(event.target.value)}>{stocks.map((stock) => <option key={stock.symbol}>{stock.symbol}</option>)}</select></label>
     </Header>
-    <div className="panel timeline-panel">
-      <div className="timeline-dates"><label>{t("startDate")}<input type="date" value={dayToDate(startDay)} min={dayToDate(minDay)} max={dayToDate(endDay - 1)} onChange={(event) => setStartDate(event.target.value)} /></label><label>{t("endDate")}<input type="date" value={dayToDate(endDay)} min={dayToDate(startDay + 1)} max={dayToDate(maxDay)} onChange={(event) => setEndDate(event.target.value)} /></label></div>
-      <div className="dual-range" aria-label={t("rangeMetrics")}><input type="range" min={minDay} max={maxDay} value={startDay} onChange={(event) => setStartDay(Math.min(Number(event.target.value), endDay - 1))} /><input type="range" min={minDay} max={maxDay} value={endDay} onChange={(event) => setEndDay(Math.max(Number(event.target.value), startDay + 1))} /></div>
-      <div className="timeline-caption"><span>{dayToDate(minDay)}</span><strong>{dayToDate(startDay)} → {dayToDate(endDay)}</strong><span>{dayToDate(maxDay)}</span></div>
+    <div className="metrics-tabs" role="tablist" aria-label={t("metrics")}>
+      <button role="tab" aria-selected={tab === "analysis"} className={tab === "analysis" ? "active" : ""} onClick={() => setTab("analysis")}>{t("analysisTab")}</button>
+      <button role="tab" aria-selected={tab === "methodology"} className={tab === "methodology" ? "active" : ""} onClick={() => setTab("methodology")}>{t("methodologyTab")}</button>
+    </div>
+    {tab === "analysis" ? <>
+    <div className="metrics-sticky-toolbar">
+      <div className="sticky-range-summary"><span>{selected.symbol} · {t("shiftRange")}</span><strong className="mono">{dayToDate(startDay)} → {dayToDate(endDay)}</strong></div>
       <div className="range-shift-controls">
-        <div><strong>{t("shiftRange")}</strong><label><input type="number" min={1} max={365} value={shiftDays} onChange={(event) => setShiftDays(Math.max(1, Math.min(365, Number(event.target.value) || 1)))} /> {t("shiftDays")}</label></div>
+        <div><label><input type="number" min={1} max={365} value={shiftDays} onChange={(event) => setShiftDays(Math.max(1, Math.min(365, Number(event.target.value) || 1)))} /> {t("shiftDays")}</label></div>
         <button className="secondary-button" disabled={startDay <= minDay} onClick={() => shiftRange(-1)} aria-label={`${t("moveEarlier")} ${shiftDays} ${t("shiftDays")}`}>← {t("moveEarlier")} {shiftDays}</button>
         <button className="secondary-button" disabled={endDay >= maxDay} onClick={() => shiftRange(1)} aria-label={`${t("moveLater")} ${shiftDays} ${t("shiftDays")}`}>{t("moveLater")} {shiftDays} →</button>
-        <span className={`tiny-badge ${running ? "" : "live"}`}>{running ? t("calculating") : t("autoCalculate")}</span>
       </div>
+      <div className="sticky-live-metrics" aria-live="polite">
+        {liveMetricKeys.map(([key, label, kind]) => <div key={key}><MetricLabel definition={metricDefinitions.get(key)}>{label}</MetricLabel><strong className="mono">{analysis ? (kind === "percent" ? formatPercent(analysis.metrics[key]) : analysis.metrics[key].toFixed(3)) : "—"}</strong></div>)}
+      </div>
+      <span className={`tiny-badge ${running ? "" : "live"}`}>{running ? t("calculating") : t("autoCalculate")}</span>
+    </div>
+    <div className="panel timeline-panel">
+      <div className="timeline-dates"><label>{t("startDate")}<input type="date" value={dayToDate(startDay)} min={dayToDate(minDay)} max={dayToDate(endDay - 1)} onChange={(event) => setStartDate(event.target.value)} /></label><label>{t("endDate")}<input type="date" value={dayToDate(endDay)} min={dayToDate(startDay + 1)} max={dayToDate(maxDay)} onChange={(event) => setEndDate(event.target.value)} /></label></div>
+      <div className="dual-range" aria-label={t("rangeMetrics")}><input type="range" min={minDay} max={maxDay} value={startDay} onChange={(event) => { setAnalysis(null); setStartDay(Math.min(Number(event.target.value), endDay - 1)); }} /><input type="range" min={minDay} max={maxDay} value={endDay} onChange={(event) => { setAnalysis(null); setEndDay(Math.max(Number(event.target.value), startDay + 1)); }} /></div>
+      <div className="timeline-caption"><span>{dayToDate(minDay)}</span><strong>{dayToDate(startDay)} → {dayToDate(endDay)}</strong><span>{dayToDate(maxDay)}</span></div>
       {error && <div className="workspace-notice error">{error}</div>}
     </div>
     {analysis && <>
       <div className="panel coverage-panel"><div><span>{t("requestedRange")}</span><strong className="mono">{analysis.requested_start} → {analysis.requested_end}</strong></div><div><span>{t("actualCoverage")}</span><strong className="mono">{analysis.actual_start} → {analysis.actual_end}</strong></div><div><span>{t("sessions")}</span><strong className="mono">{analysis.bar_count}</strong></div>{analysis.coverage_warnings.length > 0 && <p className="coverage-warning">{t("coverageGap")}</p>}</div>
       <div className="panel range-chart"><div className="panel-header"><div><h2 className="panel-title">{analysis.symbol}</h2><p className="panel-subtitle">{analysis.source} · {analysis.metric_version}</p></div></div><div className="range-chart-bars">{analysis.series.map((point) => <span key={point.date} title={`${point.date}: ${point.close}`} style={{ height: `${chartHigh === chartLow ? 50 : 10 + 85 * (point.close - chartLow) / (chartHigh - chartLow)}%` }} />)}</div></div>
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("metricsSnapshot")}</h2><p className="panel-subtitle">Cutoff {analysis.data_cutoff}</p></div></div><div className="result-grid metric-results">
-        {[["return_5d", t("return5"), "percent"], ["return_20d", t("return20"), "percent"], ["realized_volatility_20d", t("volatility20"), "percent"], ["volume_zscore_20d", t("volumeZ"), "decimal"], ["distance_ma20", t("distanceMa"), "percent"], ["drawdown_60d", t("drawdown60"), "percent"]].map(([key, label, kind]) => <div className="result-card" key={key}><div className="result-label">{label}</div><div className="result-value mono">{kind === "percent" ? formatPercent(analysis.metrics[key]) : analysis.metrics[key].toFixed(3)}</div></div>)}
+        {[["return_5d", t("return5"), "percent"], ["return_20d", t("return20"), "percent"], ["realized_volatility_20d", t("volatility20"), "percent"], ["volume_zscore_20d", t("volumeZ"), "decimal"], ["distance_ma20", t("distanceMa"), "percent"], ["drawdown_60d", t("drawdown60"), "percent"]].map(([key, label, kind]) => <div className="result-card" key={key}><div className="result-label"><MetricLabel definition={metricDefinitions.get(key)}>{label}</MetricLabel></div><div className="result-value mono">{kind === "percent" ? formatPercent(analysis.metrics[key]) : analysis.metrics[key].toFixed(3)}</div></div>)}
       </div></div>
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("forecast")}</h2><p className="panel-subtitle">{t("forecastDisclaimer")}</p></div></div><div className="forecast-grid">
         {[10, 30, 90].map((horizon) => {
@@ -1161,6 +1319,7 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
       </div>
       <p className="forecast-footnote">{language === "zh" ? "此 forecast 僅供研究與回測設計，不構成投資建議。" : "This forecast supports research and backtest design only; it is not investment advice."}</p>
     </>}
+    </> : <MetricsMethodology catalog={catalog} />}
   </div>;
 }
 
@@ -1263,6 +1422,7 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   const [backtests, setBacktests] = useState<Backtest[]>([]);
   const [eventCenter, setEventCenter] = useState<EventCenter | null>(null);
   const [confidenceCenter, setConfidenceCenter] = useState<ConfidenceCenter | null>(null);
+  const [metricCatalog, setMetricCatalog] = useState<MetricCatalog | null>(null);
   const [horizon, setHorizon] = useState<Horizon>("30D");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1277,11 +1437,11 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [overviewResult, scannerResult, pipelineResult, backtestResult, eventResult, confidenceResult] = await Promise.all([api<Overview>("/overview"), api<{ items: Stock[] }>("/scanner?horizon=30D"), api<Pipeline>("/pipeline"), api<{ items: Backtest[] }>("/backtests"), api<EventCenter>("/events"), api<ConfidenceCenter>("/confidence")]);
-      setOverview(overviewResult); setStocks(scannerResult.items); setPipeline(pipelineResult); setBacktests(backtestResult.items); setEventCenter(eventResult); setConfidenceCenter(confidenceResult);
+      const [overviewResult, scannerResult, pipelineResult, backtestResult, eventResult, confidenceResult, metricResult] = await Promise.all([api<Overview>("/overview"), api<{ items: Stock[] }>("/scanner?horizon=30D"), api<Pipeline>("/pipeline"), api<{ items: Backtest[] }>("/backtests"), api<EventCenter>("/events"), api<ConfidenceCenter>("/confidence"), api<MetricCatalog>("/metrics/catalog")]);
+      setOverview(overviewResult); setStocks(scannerResult.items); setPipeline(pipelineResult); setBacktests(backtestResult.items); setEventCenter(eventResult); setConfidenceCenter(confidenceResult); setMetricCatalog(metricResult);
       setActiveStock((current) => scannerResult.items.find((stock) => stock.symbol === current?.symbol) ?? scannerResult.items[0] ?? null);
     } catch (loadError) {
-      setOverview(null); setStocks([]); setActiveStock(null); setPipeline(null); setBacktests([]); setEventCenter(null); setConfidenceCenter(null); setError(loadError instanceof Error ? loadError.message : "API unavailable");
+      setOverview(null); setStocks([]); setActiveStock(null); setPipeline(null); setBacktests([]); setEventCenter(null); setConfidenceCenter(null); setMetricCatalog(null); setError(loadError instanceof Error ? loadError.message : "API unavailable");
     } finally { setLoading(false); }
   }, []);
   useEffect(() => {
@@ -1307,9 +1467,9 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   return <div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">P</div><div><div className="brand-name">Prism</div><div className="brand-sub">{t("localWorkbench")}</div></div></div><div className="nav-label">{t("workspace")}</div><nav className="nav-list">{navItems.map((item) => <button key={item.id} className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)}><span className="nav-icon">{item.icon}</span><span>{item.label}</span></button>)}</nav><div className="sidebar-spacer" /><div className="data-card"><div className="data-card-top"><span className="data-card-title">{overview?.market.bar_count ? t("realStoredData") : t("noMarketData")}</span><span className={`status-dot ${overview?.market.bar_count ? "" : "status-dot-empty"}`} /></div><p className="data-card-copy">{overview?.market.bar_count ? `${overview.market.symbol_count} ${t("symbols")} · Massive · ${t("noFallback")}` : t("emptyExplanation")}</p></div><div className="sidebar-footer"><div className="avatar">{(initialUser?.displayName ?? t("localResearcher")).slice(0, 1)}</div><span className="identity-copy"><strong>{initialUser?.displayName ?? t("localResearcher")}</strong><small>{t("localOnly")}</small></span></div></aside>
     <div className="workspace"><header className="topbar"><div className="search"><span className="search-icon">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("filterSymbols")} /></div><div className="topbar-actions"><span className="cutoff mono">{overview?.market.data_cutoff ? `MASSIVE EOD · ${format.date(overview.market.data_cutoff)}` : t("noMarketData")}</span><button className="language-button" onClick={() => setLanguage(language === "zh" ? "en" : "zh")}>{t("language")}</button><button className="icon-button" onClick={() => void load()}>↻</button><button className="primary-button" onClick={() => setView("data")}>{t("syncData")}</button></div></header>
       <main className="main">{loading && <div className="workspace-notice">{t("loading")}</div>}{error && <div className="workspace-notice error"><span>{t("apiError")} {error}</span><button className="secondary-button" onClick={() => void load()}>{t("retry")}</button></div>}
-        {!loading && !error && view === "overview" && overview && <div className="page-section"><Header eyebrow={t("realStoredData")} title={t("researchStored")} copy={t("researchStoredCopy")} />{overview.market.bar_count === 0 ? <EmptyMarket onOpenData={() => setView("data")} /> : <><SummaryCards overview={overview} /><div className="content-grid"><div className="panel"><div className="panel-header"><div><h2 className="panel-title">{t("storedUniverse")}</h2><p className="panel-subtitle">{t("realCrossSection")}</p></div><button className="secondary-button" onClick={() => setView("scanner")}>{t("viewScanner")}</button></div><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} />}</div></>}</div>}
-        {!loading && !error && view === "scanner" && <div className="page-section"><Header eyebrow="Massive EOD" title={t("compareReal")} copy={t("compareRealCopy")}><div className="segments">{(["10D", "30D", "90D"] as Horizon[]).map((item) => <button key={item} className={`segment-button ${horizon === item ? "active" : ""}`} onClick={() => setHorizon(item)}>{item}</button>)}</div></Header>{!stocks.length ? <EmptyMarket onOpenData={() => setView("data")} /> : <div className="content-grid"><div className="panel"><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} />}</div>}</div>}
-        {!loading && !error && view === "metrics" && <MetricsView stocks={stocks} />}
+        {!loading && !error && view === "overview" && overview && <div className="page-section"><Header eyebrow={t("realStoredData")} title={t("researchStored")} copy={t("researchStoredCopy")} />{overview.market.bar_count === 0 ? <EmptyMarket onOpenData={() => setView("data")} /> : <><SummaryCards overview={overview} /><div className="content-grid"><div className="panel"><div className="panel-header"><div><h2 className="panel-title">{t("storedUniverse")}</h2><p className="panel-subtitle">{t("realCrossSection")}</p></div><button className="secondary-button" onClick={() => setView("scanner")}>{t("viewScanner")}</button></div><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div></>}</div>}
+        {!loading && !error && view === "scanner" && <div className="page-section"><Header eyebrow="Massive EOD" title={t("compareReal")} copy={t("compareRealCopy")}><div className="segments">{(["10D", "30D", "90D"] as Horizon[]).map((item) => <button key={item} className={`segment-button ${horizon === item ? "active" : ""}`} onClick={() => setHorizon(item)}>{item}</button>)}</div></Header>{!stocks.length ? <EmptyMarket onOpenData={() => setView("data")} /> : <div className="content-grid"><div className="panel"><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div>}</div>}
+        {!loading && !error && view === "metrics" && <MetricsView stocks={stocks} catalog={metricCatalog} />}
         {!loading && !error && view === "events" && <EventsView center={eventCenter} confidence={confidenceCenter} stocks={stocks} reload={load} onOpenSymbol={(symbol) => { const stock = stocks.find((item) => item.symbol === symbol); if (stock) { setActiveStock(stock); setSearch(symbol); setView("scanner"); } }} />}
         {!loading && !error && view === "backtest" && <BacktestView backtests={backtests} run={runBacktest} running={running} />}
         {!loading && !error && view === "data" && <DataView pipeline={pipeline} sync={sync} syncing={syncing} />}

@@ -18,6 +18,7 @@ from .forecast import attach_historical_actuals, historical_analog_forecast
 from .metrics import CATALOG, METRIC_VERSION, compute_price_metrics
 from .providers.massive import MassiveMarketDataProvider, MassiveQuotaExceeded
 from .repository import PrismRepository
+from .scoring import compute_scanner_scores, scoring_methodology
 
 
 def _percentile(values: list[float], value: float) -> float:
@@ -1112,19 +1113,17 @@ class PrismService:
                 volatility_values,
                 float(metrics["realized_volatility_20d"]),
             )
-            base_score = (
-                0.30 * momentum
-                + 0.25 * relative
-                + 0.20 * trend
-                + 0.15 * volume
-                + 0.10 * (100 - volatility)
+            scores = compute_scanner_scores(
+                {
+                    "momentum": momentum,
+                    "relative_strength": relative,
+                    "trend_quality": trend,
+                    "volume_confirmation": volume,
+                    "volatility_percentile": volatility,
+                },
+                metrics,
             )
-            horizon_adjustment = {
-                "10D": 4.0 * math.tanh(float(metrics["return_5d"]) * 10),
-                "30D": 0.0,
-                "90D": 4.0 * math.tanh(-float(metrics["drawdown_60d"]) * -3),
-            }[horizon]
-            score = round(max(0.0, min(100.0, base_score + horizon_adjustment)), 1)
+            score = scores[horizon]
             if score >= 65:
                 signal = "Positive relative setup"
             elif score <= 35:
@@ -1141,33 +1140,9 @@ class PrismService:
                     "trendQuality": trend,
                     "volumeConfirmation": volume,
                     "volatility": volatility,
-                    "score10": round(
-                        max(
-                            0.0,
-                            min(
-                                100.0,
-                                base_score
-                                + 4.0
-                                * math.tanh(float(metrics["return_5d"]) * 10),
-                            ),
-                        ),
-                        1,
-                    ),
-                    "score30": round(base_score, 1),
-                    "score90": round(
-                        max(
-                            0.0,
-                            min(
-                                100.0,
-                                base_score
-                                + 4.0
-                                * math.tanh(
-                                    -float(metrics["drawdown_60d"]) * -3
-                                ),
-                            ),
-                        ),
-                        1,
-                    ),
+                    "score10": scores["10D"],
+                    "score30": scores["30D"],
+                    "score90": scores["90D"],
                     "score": score,
                     "signal": signal,
                     "signalCopy": (
@@ -1223,14 +1198,24 @@ class PrismService:
         return [
             {
                 "name": item.name,
+                "display_name": item.display_name,
+                "display_name_zh": item.display_name_zh,
                 "description": item.description,
+                "description_zh": item.description_zh,
                 "formula": item.formula,
                 "required_inputs": item.required_inputs,
                 "output_type": item.output_type,
+                "unit": item.unit,
                 "version": item.version,
             }
             for item in CATALOG
         ]
+
+    def metric_methodology(self) -> dict:
+        return {
+            "items": self.metric_catalog(),
+            "score_models": scoring_methodology(),
+        }
 
     def run_backtest(self, horizon_sessions: int) -> dict:
         histories = {

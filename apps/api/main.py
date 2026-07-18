@@ -156,7 +156,7 @@ def stock_detail(symbol: str, service: Service) -> dict:
 
 @app.get("/api/v1/metrics/catalog")
 def metric_catalog(service: Service) -> dict:
-    return {"items": service.metric_catalog()}
+    return service.metric_methodology()
 
 
 @app.get("/api/v1/predictions")

@@ -31,10 +31,14 @@ class Bar:
 @dataclass(frozen=True)
 class MetricDefinition:
     name: str
+    display_name: str
+    display_name_zh: str
     description: str
+    description_zh: str
     formula: str
     required_inputs: tuple[str, ...]
     output_type: str
+    unit: str
     version: str
 
 

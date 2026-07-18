@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from .models import Bar
+from .scoring import compute_backtest_feature_score
 
 
 BACKTEST_VERSION = "walk-forward-price-v1.0"
@@ -64,12 +65,14 @@ def _feature_score(bars: Sequence[Bar], index: int) -> float | None:
         if volume_std
         else 0.0
     )
-    return (
-        0.30 * return_20
-        + 0.25 * return_60
-        + 0.20 * distance_ma20
-        + 0.05 * max(-3.0, min(3.0, volume_z))
-        - 0.10 * volatility
+    return compute_backtest_feature_score(
+        {
+            "return_20d": return_20,
+            "return_60d": return_60,
+            "distance_ma20": distance_ma20,
+            "volume_zscore_20d": volume_z,
+            "realized_volatility_20d": volatility,
+        }
     )
 
 

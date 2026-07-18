@@ -30,6 +30,19 @@ def test_empty_database_never_returns_default_market_data(client: TestClient) ->
     assert scanner.status_code == 200
     assert scanner.json()["items"] == []
 
+    catalog = client.get("/api/v1/metrics/catalog")
+    assert catalog.status_code == 200
+    body = catalog.json()
+    assert body["items"]
+    assert body["score_models"]
+    assert all(item["display_name_zh"] for item in body["items"])
+    scanner_model = next(
+        item
+        for item in body["score_models"]
+        if item["id"] == "scanner_relative_score"
+    )
+    assert sum(term["weight"] for term in scanner_model["terms"]) == pytest.approx(1)
+
 
 def test_missing_ai_key_never_returns_default_events(client: TestClient) -> None:
     events = client.get("/api/v1/events")
