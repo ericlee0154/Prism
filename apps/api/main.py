@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+from packages.prism_core.ai_events import OpenAIQuotaExceeded
 from packages.prism_core.repository import PrismRepository
 from packages.prism_core.service import PrismService
 
@@ -86,6 +87,25 @@ class AnalysisRequest(BaseModel):
     end_date: date
 
 
+class WorldEventRefreshRequest(BaseModel):
+    lookback_days: int = Field(default=7, ge=1, le=90)
+    lookahead_days: int = Field(default=30, ge=1, le=180)
+
+
+class CompanyEventRefreshRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=12)
+    start_date: date
+    end_date: date
+
+
+class DueEventResolveRequest(BaseModel):
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class ConfidenceRefreshRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=12)
+
+
 @app.get("/api/v1/health")
 def health(service: Service) -> dict:
     summary = service.repository.market_summary()
@@ -95,6 +115,9 @@ def health(service: Service) -> dict:
         "version": app.version,
         "provider": service.provider_name,
         "provider_configured": service.provider_configured,
+        "ai_provider": "openai" if service.ai_configured else None,
+        "ai_provider_configured": service.ai_configured,
+        "ai_model": service.ai_model,
         "mode": "live" if summary["bar_count"] else "empty",
         "data_cutoff": summary["data_cutoff"],
         "database": str(DATABASE_PATH),
@@ -202,6 +225,105 @@ def create_analysis(request: AnalysisRequest, service: Service) -> dict:
 @app.get("/api/v1/analyses")
 def list_analyses(service: Service) -> dict:
     return {"items": service.repository.list_range_analyses()}
+
+
+@app.get("/api/v1/events")
+def list_events(
+    service: Service,
+    scope: Literal["world", "company"] | None = Query(default=None),
+    symbol: str | None = Query(default=None, max_length=12),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> dict:
+    return service.event_center(scope=scope, symbol=symbol, limit=limit)
+
+
+@app.post("/api/v1/events/world/refresh", status_code=201)
+def refresh_world_events(
+    request: WorldEventRefreshRequest,
+    service: Service,
+) -> dict:
+    try:
+        return service.refresh_world_events(
+            lookback_days=request.lookback_days,
+            lookahead_days=request.lookahead_days,
+        )
+    except OpenAIQuotaExceeded as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/v1/events/company/refresh", status_code=201)
+def refresh_company_events(
+    request: CompanyEventRefreshRequest,
+    service: Service,
+) -> dict:
+    try:
+        return service.refresh_company_events(
+            symbol=request.symbol,
+            start_date=request.start_date,
+            end_date=request.end_date,
+        )
+    except OpenAIQuotaExceeded as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/v1/events/due/resolve")
+def resolve_due_events(
+    request: DueEventResolveRequest,
+    service: Service,
+) -> dict:
+    try:
+        return service.resolve_due_events(limit=request.limit)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/v1/events/reactions/refresh")
+def refresh_event_reactions(service: Service) -> dict:
+    return service.recompute_event_reactions()
+
+
+@app.post("/api/v1/events/{event_id}/resolve")
+def resolve_event(event_id: str, service: Service) -> dict:
+    try:
+        return service.resolve_event(event_id)
+    except OpenAIQuotaExceeded as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/v1/confidence")
+def confidence_snapshots(
+    service: Service,
+    symbol: str | None = Query(default=None, max_length=12),
+    limit: int = Query(default=500, ge=1, le=1000),
+) -> dict:
+    return service.confidence_center(symbol=symbol, limit=limit)
+
+
+@app.post("/api/v1/confidence/refresh", status_code=201)
+def refresh_confidence(
+    request: ConfidenceRefreshRequest,
+    service: Service,
+) -> dict:
+    try:
+        return service.refresh_confidence(symbol=request.symbol)
+    except OpenAIQuotaExceeded as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.get("/")

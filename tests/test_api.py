@@ -13,6 +13,7 @@ from packages.prism_core.providers.massive import MassiveQuotaExceeded
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DATABASE_PATH", tmp_path / "prism-test.duckdb")
     monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with TestClient(main.app) as test_client:
         yield test_client
 
@@ -22,10 +23,33 @@ def test_empty_database_never_returns_default_market_data(client: TestClient) ->
     assert health.status_code == 200
     assert health.json()["mode"] == "empty"
     assert health.json()["data_cutoff"] is None
+    assert health.json()["ai_provider_configured"] is False
 
     scanner = client.get("/api/v1/scanner?horizon=30D")
     assert scanner.status_code == 200
     assert scanner.json()["items"] == []
+
+
+def test_missing_ai_key_never_returns_default_events(client: TestClient) -> None:
+    events = client.get("/api/v1/events")
+    assert events.status_code == 200
+    assert events.json()["provider_configured"] is False
+    assert events.json()["events"] == []
+
+    refresh = client.post("/api/v1/events/world/refresh", json={})
+    assert refresh.status_code == 503
+
+    events_after_failure = client.get("/api/v1/events")
+    assert events_after_failure.json()["events"] == []
+
+    confidence = client.get("/api/v1/confidence")
+    assert confidence.status_code == 200
+    assert confidence.json()["snapshots"] == []
+    confidence_refresh = client.post(
+        "/api/v1/confidence/refresh",
+        json={"symbol": "AAPL"},
+    )
+    assert confidence_refresh.status_code == 503
 
 
 def test_duckdb_repository_serializes_concurrent_reads(client: TestClient) -> None:

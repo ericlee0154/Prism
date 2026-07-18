@@ -92,6 +92,113 @@ class PrismRepository:
         )
         self.connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS event_research_runs (
+                run_id VARCHAR PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL,
+                completed_at TIMESTAMPTZ,
+                scope VARCHAR NOT NULL,
+                symbols_json VARCHAR NOT NULL,
+                window_start DATE,
+                window_end DATE,
+                provider VARCHAR NOT NULL,
+                model VARCHAR NOT NULL,
+                prompt_version VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                response_id VARCHAR,
+                usage_json VARCHAR,
+                error VARCHAR
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS research_events (
+                event_id VARCHAR PRIMARY KEY,
+                dedupe_key VARCHAR UNIQUE NOT NULL,
+                first_seen_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL,
+                scope VARCHAR NOT NULL,
+                symbol VARCHAR,
+                event_type VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                title VARCHAR NOT NULL,
+                summary VARCHAR NOT NULL,
+                event_date_start DATE,
+                event_date_end DATE,
+                release_timing VARCHAR,
+                importance INTEGER NOT NULL,
+                confidence DOUBLE NOT NULL,
+                regions_json VARCHAR NOT NULL,
+                affected_assets_json VARCHAR NOT NULL,
+                watch_items_json VARCHAR NOT NULL,
+                expectations_json VARCHAR NOT NULL,
+                actual_json VARCHAR NOT NULL,
+                reaction_json VARCHAR NOT NULL,
+                sources_json VARCHAR NOT NULL,
+                provider VARCHAR NOT NULL,
+                model VARCHAR NOT NULL,
+                prompt_version VARCHAR NOT NULL,
+                last_run_id VARCHAR NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_observations (
+                observation_id VARCHAR PRIMARY KEY,
+                event_id VARCHAR NOT NULL,
+                observed_at TIMESTAMPTZ NOT NULL,
+                phase VARCHAR NOT NULL,
+                run_id VARCHAR,
+                payload_json VARCHAR NOT NULL,
+                sources_json VARCHAR NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS confidence_evidence (
+                evidence_id VARCHAR PRIMARY KEY,
+                captured_at TIMESTAMPTZ NOT NULL,
+                symbol VARCHAR NOT NULL,
+                period_start DATE NOT NULL,
+                institution VARCHAR,
+                category VARCHAR NOT NULL,
+                stance INTEGER NOT NULL,
+                statement VARCHAR NOT NULL,
+                rationale VARCHAR NOT NULL,
+                published_date DATE NOT NULL,
+                confidence DOUBLE NOT NULL,
+                sources_json VARCHAR NOT NULL,
+                run_id VARCHAR NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS confidence_snapshots (
+                snapshot_key VARCHAR PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL,
+                symbol VARCHAR NOT NULL,
+                dimension VARCHAR NOT NULL,
+                entity VARCHAR NOT NULL,
+                frequency VARCHAR NOT NULL,
+                period_start DATE NOT NULL,
+                score DOUBLE,
+                coverage_status VARCHAR NOT NULL,
+                evidence_count INTEGER NOT NULL,
+                components_json VARCHAR NOT NULL,
+                sources_json VARCHAR NOT NULL,
+                data_cutoff TIMESTAMPTZ,
+                provider VARCHAR NOT NULL,
+                model VARCHAR NOT NULL,
+                prompt_version VARCHAR NOT NULL,
+                run_id VARCHAR NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS predictions (
                 prediction_id VARCHAR PRIMARY KEY,
                 created_at TIMESTAMPTZ NOT NULL,
@@ -395,6 +502,434 @@ class PrismRepository:
         ]
 
     @_serialized
+    def begin_event_run(
+        self,
+        *,
+        scope: str,
+        symbols: list[str],
+        window_start: str | None,
+        window_end: str | None,
+        provider: str,
+        model: str,
+        prompt_version: str,
+    ) -> str:
+        run_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO event_research_runs
+            (run_id, created_at, scope, symbols_json, window_start, window_end,
+             provider, model, prompt_version, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')
+            """,
+            [
+                run_id,
+                datetime.now().astimezone(),
+                scope,
+                json.dumps(symbols),
+                window_start,
+                window_end,
+                provider,
+                model,
+                prompt_version,
+            ],
+        )
+        return run_id
+
+    @_serialized
+    def finish_event_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        response_id: str | None = None,
+        usage: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.connection.execute(
+            """
+            UPDATE event_research_runs
+            SET completed_at = ?, status = ?, response_id = ?, usage_json = ?, error = ?
+            WHERE run_id = ?
+            """,
+            [
+                datetime.now().astimezone(),
+                status,
+                response_id,
+                json.dumps(usage or {}, sort_keys=True),
+                error,
+                run_id,
+            ],
+        )
+
+    @_serialized
+    def upsert_research_event(
+        self,
+        event: dict[str, Any],
+        *,
+        run_id: str,
+    ) -> str:
+        existing = self.connection.execute(
+            "SELECT event_id FROM research_events WHERE dedupe_key = ?",
+            [event["dedupe_key"]],
+        ).fetchone()
+        now = datetime.now().astimezone()
+        event_id = str(existing[0]) if existing else str(uuid4())
+        values = [
+            event["scope"],
+            event.get("symbol"),
+            event["event_type"],
+            event["status"],
+            event["title"],
+            event["summary"],
+            event.get("event_date_start"),
+            event.get("event_date_end"),
+            event.get("release_timing"),
+            int(event["importance"]),
+            float(event["confidence"]),
+            json.dumps(event.get("regions", []), sort_keys=True),
+            json.dumps(event.get("affected_assets", []), sort_keys=True),
+            json.dumps(event.get("watch_items", []), sort_keys=True),
+            json.dumps(event.get("expectations", {}), sort_keys=True),
+            json.dumps(event.get("actual", {}), sort_keys=True),
+            json.dumps(event.get("reaction", {}), sort_keys=True),
+            json.dumps(event.get("sources", []), sort_keys=True),
+            event["provider"],
+            event["model"],
+            event["prompt_version"],
+            run_id,
+        ]
+        if existing:
+            self.connection.execute(
+                """
+                UPDATE research_events
+                SET updated_at = ?, scope = ?, symbol = ?, event_type = ?,
+                    status = ?, title = ?, summary = ?, event_date_start = ?,
+                    event_date_end = ?, release_timing = ?, importance = ?,
+                    confidence = ?, regions_json = ?, affected_assets_json = ?,
+                    watch_items_json = ?, expectations_json = ?, actual_json = ?,
+                    reaction_json = ?, sources_json = ?, provider = ?, model = ?,
+                    prompt_version = ?, last_run_id = ?
+                WHERE event_id = ?
+                """,
+                [now, *values, event_id],
+            )
+        else:
+            self.connection.execute(
+                """
+                INSERT INTO research_events
+                (event_id, dedupe_key, first_seen_at, updated_at, scope, symbol,
+                 event_type, status, title, summary, event_date_start,
+                 event_date_end, release_timing, importance, confidence,
+                 regions_json, affected_assets_json, watch_items_json,
+                 expectations_json, actual_json, reaction_json, sources_json,
+                 provider, model, prompt_version, last_run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    event_id,
+                    event["dedupe_key"],
+                    now,
+                    now,
+                    *values,
+                ],
+            )
+        return event_id
+
+    @_serialized
+    def append_event_observation(
+        self,
+        *,
+        event_id: str,
+        phase: str,
+        run_id: str | None,
+        payload: dict[str, Any],
+        sources: list[dict[str, str]],
+    ) -> str:
+        observation_id = str(uuid4())
+        self.connection.execute(
+            "INSERT INTO event_observations VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                observation_id,
+                event_id,
+                datetime.now().astimezone(),
+                phase,
+                run_id,
+                json.dumps(payload, sort_keys=True, default=str),
+                json.dumps(sources, sort_keys=True),
+            ],
+        )
+        return observation_id
+
+    @_serialized
+    def update_event_outcome(
+        self,
+        event_id: str,
+        *,
+        status: str,
+        actual_event_date: str | None,
+        actual: dict[str, Any],
+        reaction: dict[str, Any],
+        run_id: str,
+    ) -> None:
+        current = self.connection.execute(
+            "SELECT sources_json FROM research_events WHERE event_id = ?",
+            [event_id],
+        ).fetchone()
+        merged_sources: dict[str, dict[str, str]] = {
+            source["url"]: source
+            for source in json.loads(current[0] if current else "[]")
+            if source.get("url")
+        }
+        for source in actual.get("sources", []):
+            if source.get("url"):
+                merged_sources[source["url"]] = source
+        self.connection.execute(
+            """
+            UPDATE research_events
+            SET updated_at = ?, status = ?,
+                event_date_start = COALESCE(?, event_date_start),
+                event_date_end = COALESCE(?, event_date_end),
+                actual_json = ?, reaction_json = ?, sources_json = ?,
+                last_run_id = ?
+            WHERE event_id = ?
+            """,
+            [
+                datetime.now().astimezone(),
+                status,
+                actual_event_date,
+                actual_event_date,
+                json.dumps(actual, sort_keys=True, default=str),
+                json.dumps(reaction, sort_keys=True, default=str),
+                json.dumps(list(merged_sources.values()), sort_keys=True),
+                run_id,
+                event_id,
+            ],
+        )
+
+    @_serialized
+    def list_research_events(
+        self,
+        *,
+        scope: str | None = None,
+        symbol: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        statuses: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if scope:
+            clauses.append("scope = ?")
+            parameters.append(scope)
+        if symbol:
+            clauses.append("symbol = ?")
+            parameters.append(symbol.upper())
+        if start_date:
+            clauses.append(
+                "(event_date_end IS NULL OR event_date_end >= CAST(? AS DATE))"
+            )
+            parameters.append(start_date)
+        if end_date:
+            clauses.append(
+                "(event_date_start IS NULL OR event_date_start <= CAST(? AS DATE))"
+            )
+            parameters.append(end_date)
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            clauses.append(f"status IN ({placeholders})")
+            parameters.extend(statuses)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(limit)
+        rows = self.connection.execute(
+            f"""
+            SELECT event_id, first_seen_at, updated_at, scope, symbol,
+                   event_type, status, title, summary, event_date_start,
+                   event_date_end, release_timing, importance, confidence,
+                   regions_json, affected_assets_json, watch_items_json,
+                   expectations_json, actual_json, reaction_json, sources_json,
+                   provider, model, prompt_version, last_run_id
+            FROM research_events
+            {where}
+            ORDER BY
+                CASE WHEN event_date_start IS NULL THEN 1 ELSE 0 END,
+                event_date_start,
+                importance DESC,
+                updated_at DESC
+            LIMIT ?
+            """,
+            parameters,
+        ).fetchall()
+        return [_event_row_to_dict(row) for row in rows]
+
+    @_serialized
+    def get_research_event(self, event_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT event_id, first_seen_at, updated_at, scope, symbol,
+                   event_type, status, title, summary, event_date_start,
+                   event_date_end, release_timing, importance, confidence,
+                   regions_json, affected_assets_json, watch_items_json,
+                   expectations_json, actual_json, reaction_json, sources_json,
+                   provider, model, prompt_version, last_run_id
+            FROM research_events
+            WHERE event_id = ?
+            """,
+            [event_id],
+        ).fetchone()
+        return _event_row_to_dict(row) if row else None
+
+    @_serialized
+    def list_event_runs(self, limit: int = 30) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT run_id, created_at, completed_at, scope, symbols_json,
+                   window_start, window_end, provider, model, prompt_version,
+                   status, response_id, usage_json, error
+            FROM event_research_runs
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [limit],
+        ).fetchall()
+        return [
+            {
+                "run_id": row[0],
+                "created_at": row[1].isoformat(),
+                "completed_at": row[2].isoformat() if row[2] else None,
+                "scope": row[3],
+                "symbols": json.loads(row[4]),
+                "window_start": row[5].isoformat() if row[5] else None,
+                "window_end": row[6].isoformat() if row[6] else None,
+                "provider": row[7],
+                "model": row[8],
+                "prompt_version": row[9],
+                "status": row[10],
+                "response_id": row[11],
+                "usage": json.loads(row[12] or "{}"),
+                "error": row[13],
+            }
+            for row in rows
+        ]
+
+    @_serialized
+    def append_confidence_evidence(
+        self,
+        *,
+        symbol: str,
+        period_start: str,
+        evidence: dict[str, Any],
+        sources: list[dict[str, str]],
+        run_id: str,
+    ) -> str:
+        evidence_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO confidence_evidence
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                evidence_id,
+                datetime.now().astimezone(),
+                symbol.upper(),
+                period_start,
+                evidence.get("institution"),
+                evidence["category"],
+                int(evidence["stance"]),
+                evidence["statement"],
+                evidence["rationale"],
+                evidence["published_date"],
+                float(evidence["confidence"]),
+                json.dumps(sources, sort_keys=True),
+                run_id,
+            ],
+        )
+        return evidence_id
+
+    @_serialized
+    def upsert_confidence_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO confidence_snapshots
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                snapshot["snapshot_key"],
+                datetime.now().astimezone(),
+                snapshot["symbol"].upper(),
+                snapshot["dimension"],
+                snapshot.get("entity") or "",
+                snapshot["frequency"],
+                snapshot["period_start"],
+                snapshot.get("score"),
+                snapshot["coverage_status"],
+                int(snapshot["evidence_count"]),
+                json.dumps(snapshot.get("components", {}), sort_keys=True),
+                json.dumps(snapshot.get("sources", []), sort_keys=True),
+                snapshot.get("data_cutoff"),
+                snapshot["provider"],
+                snapshot["model"],
+                snapshot["prompt_version"],
+                snapshot["run_id"],
+            ],
+        )
+
+    @_serialized
+    def list_confidence_snapshots(
+        self,
+        *,
+        symbol: str | None = None,
+        dimension: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if symbol:
+            clauses.append("symbol = ?")
+            parameters.append(symbol.upper())
+        if dimension:
+            clauses.append("dimension = ?")
+            parameters.append(dimension)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(limit)
+        rows = self.connection.execute(
+            f"""
+            SELECT snapshot_key, created_at, symbol, dimension, entity,
+                   frequency, period_start, score, coverage_status,
+                   evidence_count, components_json, sources_json, data_cutoff,
+                   provider, model, prompt_version, run_id
+            FROM confidence_snapshots
+            {where}
+            ORDER BY period_start DESC, dimension, entity
+            LIMIT ?
+            """,
+            parameters,
+        ).fetchall()
+        return [
+            {
+                "snapshot_key": row[0],
+                "created_at": row[1].isoformat(),
+                "symbol": row[2],
+                "dimension": row[3],
+                "entity": row[4] or None,
+                "frequency": row[5],
+                "period_start": row[6].isoformat(),
+                "score": float(row[7]) if row[7] is not None else None,
+                "coverage_status": row[8],
+                "evidence_count": int(row[9]),
+                "components": json.loads(row[10]),
+                "sources": json.loads(row[11]),
+                "data_cutoff": row[12].isoformat() if row[12] else None,
+                "provider": row[13],
+                "model": row[14],
+                "prompt_version": row[15],
+                "run_id": row[16],
+            }
+            for row in rows
+        ]
+
+    @_serialized
     def append_prediction(self, record: dict[str, Any]) -> dict[str, Any]:
         prediction_id = str(uuid4())
         serialized_snapshot = json.dumps(record["input_snapshot"], sort_keys=True)
@@ -488,6 +1023,36 @@ class PrismRepository:
     @_serialized
     def close(self) -> None:
         self.connection.close()
+
+
+def _event_row_to_dict(row) -> dict[str, Any]:
+    return {
+        "event_id": row[0],
+        "first_seen_at": row[1].isoformat(),
+        "updated_at": row[2].isoformat(),
+        "scope": row[3],
+        "symbol": row[4],
+        "event_type": row[5],
+        "status": row[6],
+        "title": row[7],
+        "summary": row[8],
+        "event_date_start": row[9].isoformat() if row[9] else None,
+        "event_date_end": row[10].isoformat() if row[10] else None,
+        "release_timing": row[11],
+        "importance": int(row[12]),
+        "confidence": float(row[13]),
+        "regions": json.loads(row[14]),
+        "affected_assets": json.loads(row[15]),
+        "watch_items": json.loads(row[16]),
+        "expectations": json.loads(row[17]),
+        "actual": json.loads(row[18]),
+        "reaction": json.loads(row[19]),
+        "sources": json.loads(row[20]),
+        "provider": row[21],
+        "model": row[22],
+        "prompt_version": row[23],
+        "last_run_id": row[24],
+    }
 
 
 def _stable_record_hash(*parts: str) -> str:

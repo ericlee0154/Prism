@@ -54,6 +54,24 @@
 - [ ] Add train/validation/final-holdout partitions for formula selection.
 - [ ] Add metric and formula version comparison across successive universes.
 
+## Events and confidence
+
+- [x] Track source-grounded world events in DuckDB without placeholder content.
+- [x] Track scheduled earnings and major company announcements inside forecast
+  horizons.
+- [x] Append sourced post-event outcomes without rewriting historical
+  observations.
+- [x] Calculate 1-, 5-, and 20-session local market reactions and SPY-relative
+  excess returns.
+- [x] Stop AI research immediately on quota responses without retrying.
+- [x] Store weekly institution-by-institution confidence snapshots.
+- [x] Store monthly long-term company confidence with separate market,
+  institution, and brand components.
+- [x] Preserve null components and explicit coverage instead of neutral fills.
+- [ ] Add a local scheduler for weekly, monthly, due-event, and reaction refresh.
+- [ ] Add a licensed structured analyst-ratings adapter as an optional source.
+- [ ] Add point-in-time consensus revisions and earnings-surprise normalization.
+
 ## Portfolio data
 
 - [ ] Add local CSV import for Robinhood, Fidelity, and E*TRADE.

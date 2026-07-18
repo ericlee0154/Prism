@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 type Language = "zh" | "en";
-type View = "overview" | "scanner" | "metrics" | "backtest" | "data";
+type View = "overview" | "scanner" | "metrics" | "events" | "backtest" | "data";
 type Horizon = "10D" | "30D" | "90D";
 
 type PrismUser = { displayName: string; email: string; local: boolean };
@@ -50,6 +50,100 @@ type Forecast = {
   positive_probability?: number | null;
   analog_dates?: string[];
 };
+type EventSource = { title: string; url: string };
+type EventReturn = {
+  status: "complete" | "pending";
+  symbol_return: number | null;
+  benchmark_return: number | null;
+  excess_return: number | null;
+  target_date: string | null;
+};
+type ResearchEvent = {
+  event_id: string;
+  first_seen_at: string;
+  updated_at: string;
+  scope: "world" | "company";
+  symbol: string | null;
+  event_type: string;
+  status: string;
+  title: string;
+  summary: string;
+  event_date_start: string | null;
+  event_date_end: string | null;
+  release_timing: string | null;
+  importance: number;
+  confidence: number;
+  regions: string[];
+  affected_assets: string[];
+  watch_items: string[];
+  expectations: Record<string, unknown>;
+  actual: Record<string, unknown>;
+  reaction: {
+    status?: string;
+    benchmark?: string;
+    reaction_session?: string;
+    reaction_volume_zscore_20?: number | null;
+    returns?: Record<string, EventReturn>;
+    data_cutoff?: string;
+  };
+  sources: EventSource[];
+  provider: string;
+  model: string;
+  prompt_version: string;
+  forecast_horizons?: number[];
+};
+type EventCenter = {
+  provider: string | null;
+  provider_configured: boolean;
+  model: string | null;
+  prompt_version: string;
+  due_event_count: number;
+  events: ResearchEvent[];
+  runs: {
+    run_id: string;
+    created_at: string;
+    scope: string;
+    status: string;
+    model: string;
+    error: string | null;
+  }[];
+};
+type ConfidenceSnapshot = {
+  snapshot_key: string;
+  created_at: string;
+  symbol: string;
+  dimension: "institution" | "company_long_term";
+  entity: string | null;
+  frequency: "weekly" | "monthly";
+  period_start: string;
+  score: number | null;
+  coverage_status: string;
+  evidence_count: number;
+  components: {
+    scores?: Record<string, number | null>;
+    evidence?: {
+      institution: string | null;
+      category: string;
+      stance: number;
+      statement: string;
+      rationale: string;
+      published_date: string;
+      confidence: number;
+    }[];
+  };
+  sources: EventSource[];
+  data_cutoff: string | null;
+  provider: string;
+  model: string;
+  prompt_version: string;
+};
+type ConfidenceCenter = {
+  provider: string | null;
+  provider_configured: boolean;
+  model: string | null;
+  prompt_version: string;
+  snapshots: ConfidenceSnapshot[];
+};
 type RangeAnalysis = {
   analysis_id: string;
   symbol: string;
@@ -64,6 +158,8 @@ type RangeAnalysis = {
   metrics: Record<string, number>;
   coverage_warnings: string[];
   forecasts: Record<string, Forecast>;
+  forecast_horizon_ends: Record<string, string>;
+  scheduled_events: ResearchEvent[];
   series: { date: string; close: number }[];
 };
 type Backtest = {
@@ -124,6 +220,7 @@ const translations = {
   overview: { zh: "總覽", en: "Overview" },
   scanner: { zh: "市場掃描", en: "Market scanner" },
   metrics: { zh: "區間 Metrics", en: "Range metrics" },
+  events: { zh: "世界與公司事件", en: "World & company events" },
   backtests: { zh: "回測", en: "Backtests" },
   dataPipeline: { zh: "資料與管線", en: "Data & pipeline" },
   workspace: { zh: "工作區", en: "Workspace" },
@@ -212,6 +309,62 @@ const translations = {
     zh: "Forecast 是所選歷史區間內相似 metric 狀態的結果分布，不是即時報價、保證或交易建議。",
     en: "Forecasts are outcome distributions for similar metric states inside the selected history, not live quotes, guarantees, or trade advice.",
   },
+  eventResearch: { zh: "AI 來源化事件研究", en: "AI source-grounded event research" },
+  eventResearchTitle: { zh: "把預告、結果與市場反應連成資料。", en: "Connect previews, outcomes, and market reactions." },
+  eventResearchCopy: {
+    zh: "OpenAI 只負責查找與彙整有來源的世界時事、財報及重大發表；價格反應由本機 Massive 日線計算並存入 DuckDB。",
+    en: "OpenAI finds and summarizes sourced world events, earnings, and major announcements; Prism computes price reactions from local Massive bars and stores the record in DuckDB.",
+  },
+  refreshWorld: { zh: "更新世界事件", en: "Refresh world events" },
+  resolveDue: { zh: "補齊到期事件", en: "Resolve due events" },
+  refreshReactions: { zh: "重算市場反應", en: "Recompute reactions" },
+  refreshingEvents: { zh: "研究中…", en: "Researching…" },
+  aiKeyMissing: { zh: "尚未設定 OpenAI API key", en: "OpenAI API key is not configured" },
+  aiKeyMissingCopy: {
+    zh: "請把 OPENAI_API_KEY 加到本機 .env，然後重啟 API。Prism 不會顯示 AI 生成的預設事件。",
+    en: "Add OPENAI_API_KEY to the local .env and restart the API. Prism will not show generated placeholder events.",
+  },
+  noStoredEvents: { zh: "尚無已研究事件", en: "No researched events are stored" },
+  noStoredEventsCopy: {
+    zh: "按下更新後才會呼叫 AI；沒有結果時保持空白，不把「未研究」誤當成「沒有事件」。",
+    en: "AI is called only when you refresh. Empty means not yet researched, not proof that no events exist.",
+  },
+  worldEvents: { zh: "世界事件", en: "World events" },
+  companyEvents: { zh: "公司事件", en: "Company events" },
+  expectations: { zh: "市場預期／情境", en: "Expectations / scenarios" },
+  actualResult: { zh: "實際結果", en: "Actual result" },
+  marketReaction: { zh: "本機市場反應", en: "Local market reaction" },
+  watchItems: { zh: "觀察重點", en: "Watch items" },
+  sources: { zh: "來源", en: "Sources" },
+  resolveEvent: { zh: "查詢實際結果", en: "Research actual outcome" },
+  eventDate: { zh: "事件日期", en: "Event date" },
+  confidence: { zh: "信心", en: "Confidence" },
+  importance: { zh: "重要度", en: "Importance" },
+  researchForecastEvents: { zh: "研究 forecast 期間事件", en: "Research forecast-window events" },
+  noForecastEvents: {
+    zh: "此 forecast 區間尚無已儲存的事件研究；這不代表沒有事件。",
+    en: "No event research is stored for this forecast window; this does not mean no events exist.",
+  },
+  forecastWindowEvents: { zh: "Forecast 區間事件", en: "Forecast-window events" },
+  confidenceTracking: { zh: "信心指數時間序列", en: "Confidence index time series" },
+  confidenceTrackingCopy: {
+    zh: "每週保存各機構的公開立場；每月保存由價格趨勢、機構觀點與品牌證據組成的長期信心。分項缺失時不補值。",
+    en: "Store public institutional stances weekly and a monthly long-term confidence composite from price trend, institutions, and brand evidence. Missing components remain missing.",
+  },
+  refreshConfidence: { zh: "更新所選股票信心", en: "Refresh selected confidence" },
+  institutionalWeekly: { zh: "機構信心・每週", en: "Institution confidence · weekly" },
+  longTermMonthly: { zh: "公司長期信心・每月", en: "Company long-term confidence · monthly" },
+  noConfidence: {
+    zh: "尚無信心 snapshot。更新前保持空白。",
+    en: "No confidence snapshot is stored. It remains empty until refreshed.",
+  },
+  coverage: { zh: "覆蓋", en: "Coverage" },
+  evidence: { zh: "證據", en: "Evidence" },
+  marketPriceComponent: { zh: "市場價格", en: "Market price" },
+  institutionComponent: { zh: "機構", en: "Institutional" },
+  brandComponent: { zh: "品牌證據", en: "Brand evidence" },
+  aiRunHistory: { zh: "AI 研究執行紀錄", en: "AI research run history" },
+  noAiRuns: { zh: "尚未執行 AI 研究。", en: "No AI research has been run." },
   walkForward: { zh: "Walk-forward 驗證・只用已儲存日線", en: "Walk-forward validation · stored bars only" },
   testWithoutInventing: { zh: "不捏造結果地測試 metrics。", en: "Test metrics without inventing outcomes." },
   testWithoutInventingCopy: {
@@ -385,6 +538,7 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
   const [endDay, setEndDay] = useState(selected ? dateToDay(selected.last_observation) : maxDay);
   const [analysis, setAnalysis] = useState<RangeAnalysis | null>(null);
   const [running, setRunning] = useState(false);
+  const [eventRefreshing, setEventRefreshing] = useState(false);
   const [error, setError] = useState("");
 
   const chooseSymbol = (value: string) => {
@@ -413,6 +567,26 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
   };
   const setStartDate = (value: string) => setStartDay(Math.min(dateToDay(value), endDay - 1));
   const setEndDate = (value: string) => setEndDay(Math.max(dateToDay(value), startDay + 1));
+  const researchForecastEvents = async () => {
+    if (!selected || !analysis) return;
+    setEventRefreshing(true);
+    setError("");
+    try {
+      await api("/events/company/refresh", {
+        method: "POST",
+        body: JSON.stringify({
+          symbol: selected.symbol,
+          start_date: dayToDate(dateToDay(analysis.actual_end) + 1),
+          end_date: analysis.forecast_horizon_ends["90"],
+        }),
+      });
+      await run();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : t("apiError"));
+    } finally {
+      setEventRefreshing(false);
+    }
+  };
   const chartValues = analysis?.series.map((item) => item.close) ?? [];
   const chartLow = chartValues.length ? Math.min(...chartValues) : 0;
   const chartHigh = chartValues.length ? Math.max(...chartValues) : 1;
@@ -438,8 +612,69 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("forecast")}</h2><p className="panel-subtitle">{t("forecastDisclaimer")}</p></div></div><div className="forecast-grid">
         {[10, 30, 90].map((horizon) => { const forecast = analysis.forecasts[String(horizon)]; return <div className="forecast-card" key={horizon}><div className="forecast-top"><strong>{horizon} {t("sessions")}</strong><span className="tiny-badge">{forecast.status}</span></div>{forecast.status === "complete" ? <><div><span>{t("medianReturn")}</span><strong className="mono">{formatPercent(forecast.median_return)}</strong></div><div><span>{t("range1090")}</span><strong className="mono">{formatPercent(forecast.p10_return)} → {formatPercent(forecast.p90_return)}</strong></div><div><span>{t("positiveProbability")}</span><strong className="mono">{formatPercent(forecast.positive_probability, 1)}</strong></div><small>{forecast.sample_count} {t("analogSamples")}</small></> : <p>{t("insufficient")} ({forecast.sample_count})</p>}</div>; })}
       </div></div>
+      <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("forecastWindowEvents")}</h2><p className="panel-subtitle">{analysis.actual_end} → {analysis.forecast_horizon_ends["90"]}</p></div><button className="secondary-button" disabled={eventRefreshing} onClick={() => void researchForecastEvents()}>{eventRefreshing ? t("refreshingEvents") : t("researchForecastEvents")}</button></div>
+        {analysis.scheduled_events.length ? <div className="forecast-event-list">{analysis.scheduled_events.map((event) => <article className="forecast-event-row" key={event.event_id}><div><div className="event-card-top"><span className="tiny-badge">{event.event_type}</span><strong>{event.symbol} · {event.title}</strong></div><p>{event.summary}</p><div className="note-tags">{event.forecast_horizons?.map((item) => <span className="tiny-badge live" key={item}>{item}D</span>)}</div></div><div><strong className="mono">{event.event_date_start ?? "—"}</strong><div className="event-source-links">{event.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">{source.title || new URL(source.url).hostname}</a>)}</div></div></article>)}</div> : <div className="empty-state">{t("noForecastEvents")}</div>}
+      </div>
       <p className="forecast-footnote">{language === "zh" ? "此 forecast 僅供研究與回測設計，不構成投資建議。" : "This forecast supports research and backtest design only; it is not investment advice."}</p>
     </>}
+  </div>;
+}
+
+function EventCard({ event, onResolve, busy }: { event: ResearchEvent; onResolve: (eventId: string) => Promise<void>; busy: boolean }) {
+  const { t } = useI18n();
+  const actualResults = Array.isArray(event.actual.actual_results)
+    ? event.actual.actual_results.filter((item): item is string => typeof item === "string")
+    : [];
+  const reactionReturns = event.reaction.returns ?? {};
+  const canResolve = event.scope === "company" && ["scheduled", "date_uncertain"].includes(event.status);
+  return <article className="event-card">
+    <div className="event-card-top"><div className="note-tags"><span className={`tiny-badge ${event.status === "occurred" ? "live" : ""}`}>{event.status}</span><span className="tiny-badge">{event.event_type}</span>{event.symbol && <span className="tiny-badge">{event.symbol}</span>}</div><span className="mono event-date">{event.event_date_start ?? "—"}</span></div>
+    <h3>{event.title}</h3><p>{event.summary}</p>
+    <div className="event-facts"><span>{t("importance")} <strong>{event.importance}/5</strong></span><span>{t("confidence")} <strong>{formatPercent(event.confidence, 0)}</strong></span><span>{event.model}</span></div>
+    {Object.keys(event.expectations).length > 0 && <div className="event-detail"><strong>{t("expectations")}</strong>{Object.entries(event.expectations).map(([key, value]) => Array.isArray(value) ? <div key={key}><small>{key.replaceAll("_", " ")}</small><ul>{value.filter((item): item is string => typeof item === "string").map((item) => <li key={item}>{item}</li>)}</ul></div> : value ? <p key={key}><small>{key.replaceAll("_", " ")}</small>{String(value)}</p> : null)}</div>}
+    {event.watch_items.length > 0 && <div className="event-detail"><strong>{t("watchItems")}</strong><ul>{event.watch_items.map((item) => <li key={item}>{item}</li>)}</ul></div>}
+    {actualResults.length > 0 && <div className="event-detail actual"><strong>{t("actualResult")}</strong><ul>{actualResults.map((item) => <li key={item}>{item}</li>)}</ul></div>}
+    {Object.keys(reactionReturns).length > 0 && <div className="event-detail reaction"><strong>{t("marketReaction")}</strong><div className="reaction-grid">{[1, 5, 20].map((sessions) => { const item = reactionReturns[`${sessions}_session`]; return <div key={sessions}><small>{sessions}D</small><b className="mono">{formatPercent(item?.symbol_return)}</b><span className="mono">excess {formatPercent(item?.excess_return)}</span></div>; })}</div><small>{event.reaction.benchmark ?? "SPY"} · cutoff {event.reaction.data_cutoff ?? "—"}</small></div>}
+    <div className="event-card-footer"><div className="event-source-links"><strong>{t("sources")}</strong>{event.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">{source.title || new URL(source.url).hostname} ↗</a>)}</div>{canResolve && <button className="secondary-button" disabled={busy} onClick={() => void onResolve(event.event_id)}>{t("resolveEvent")}</button>}</div>
+  </article>;
+}
+
+function ConfidencePanel({ center, stocks, onRefresh, busy }: { center: ConfidenceCenter | null; stocks: Stock[]; onRefresh: (symbol: string) => Promise<void>; busy: boolean }) {
+  const { t } = useI18n();
+  const [symbol, setSymbol] = useState(stocks.find((stock) => stock.symbol === "AAPL")?.symbol ?? stocks[0]?.symbol ?? "");
+  const snapshots = center?.snapshots.filter((item) => item.symbol === symbol) ?? [];
+  const institutions = snapshots.filter((item) => item.dimension === "institution");
+  const longTerm = snapshots.filter((item) => item.dimension === "company_long_term");
+  return <section className="panel confidence-panel"><div className="panel-header"><div><h2 className="panel-title">{t("confidenceTracking")}</h2><p className="panel-subtitle">{t("confidenceTrackingCopy")}</p></div><div className="heading-actions"><select className="filter-select" value={symbol} onChange={(event) => setSymbol(event.target.value)}>{stocks.map((stock) => <option key={stock.symbol}>{stock.symbol}</option>)}</select><button className="secondary-button" disabled={busy || !symbol || !center?.provider_configured} onClick={() => void onRefresh(symbol)}>{busy ? t("refreshingEvents") : t("refreshConfidence")}</button></div></div>
+    {!snapshots.length ? <div className="empty-state">{t("noConfidence")}</div> : <div className="confidence-columns"><div><h3>{t("institutionalWeekly")}</h3>{institutions.map((snapshot) => <div className="confidence-row" key={snapshot.snapshot_key}><div><strong>{snapshot.entity}</strong><small>{snapshot.period_start} · {snapshot.evidence_count} {t("evidence")}</small></div><span className="confidence-score mono">{snapshot.score?.toFixed(1) ?? "—"}</span></div>)}</div><div><h3>{t("longTermMonthly")}</h3>{longTerm.map((snapshot) => <div className="long-confidence" key={snapshot.snapshot_key}><div className="confidence-hero"><span className="confidence-score mono">{snapshot.score?.toFixed(1) ?? "—"}</span><div><strong>{snapshot.period_start}</strong><small>{t("coverage")}: {snapshot.coverage_status}</small></div></div><div className="confidence-components">{[["market_price", t("marketPriceComponent")], ["institutional", t("institutionComponent")], ["brand_evidence", t("brandComponent")]].map(([key, label]) => <div key={key}><span>{label}</span><strong className="mono">{snapshot.components.scores?.[key]?.toFixed(1) ?? "—"}</strong></div>)}</div><div className="event-source-links">{snapshot.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">{source.title || new URL(source.url).hostname}</a>)}</div></div>)}</div></div>}
+  </section>;
+}
+
+function EventsView({ center, confidence, stocks, reload }: { center: EventCenter | null; confidence: ConfidenceCenter | null; stocks: Stock[]; reload: () => Promise<void> }) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const act = async (name: string, path: string, body?: object) => {
+    setBusy(name); setError("");
+    try {
+      await api(path, { method: "POST", body: JSON.stringify(body ?? {}) });
+      await reload();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : t("apiError"));
+    } finally {
+      setBusy("");
+    }
+  };
+  const world = center?.events.filter((event) => event.scope === "world") ?? [];
+  const company = center?.events.filter((event) => event.scope === "company") ?? [];
+  return <div className="page-section"><Header eyebrow={t("eventResearch")} title={t("eventResearchTitle")} copy={t("eventResearchCopy")}><button className="secondary-button" disabled={Boolean(busy) || !center?.provider_configured} onClick={() => void act("world", "/events/world/refresh")}>{busy === "world" ? t("refreshingEvents") : t("refreshWorld")}</button><button className="secondary-button" disabled={Boolean(busy) || !center?.provider_configured || !center.due_event_count} onClick={() => void act("due", "/events/due/resolve", { limit: 5 })}>{t("resolveDue")} ({center?.due_event_count ?? 0})</button><button className="secondary-button" disabled={Boolean(busy)} onClick={() => void act("reaction", "/events/reactions/refresh")}>{t("refreshReactions")}</button></Header>
+    {error && <div className="workspace-notice error">{error}</div>}
+    {!center?.provider_configured && <div className="panel empty-market"><span className="tiny-badge">{t("emptyByDesign")}</span><h2>{t("aiKeyMissing")}</h2><p>{t("aiKeyMissingCopy")}</p></div>}
+    {center?.provider_configured && !center.events.length && <div className="panel empty-market"><h2>{t("noStoredEvents")}</h2><p>{t("noStoredEventsCopy")}</p></div>}
+    {world.length > 0 && <section><div className="section-heading"><h2>{t("worldEvents")}</h2><span>{world.length}</span></div><div className="event-grid">{world.map((event) => <EventCard key={event.event_id} event={event} busy={Boolean(busy)} onResolve={(eventId) => act(`event-${eventId}`, `/events/${eventId}/resolve`)} />)}</div></section>}
+    {company.length > 0 && <section><div className="section-heading"><h2>{t("companyEvents")}</h2><span>{company.length}</span></div><div className="event-grid">{company.map((event) => <EventCard key={event.event_id} event={event} busy={Boolean(busy)} onResolve={(eventId) => act(`event-${eventId}`, `/events/${eventId}/resolve`)} />)}</div></section>}
+    <ConfidencePanel center={confidence} stocks={stocks} busy={Boolean(busy)} onRefresh={(symbol) => act(`confidence-${symbol}`, "/confidence/refresh", { symbol })} />
+    <section className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("aiRunHistory")}</h2><p className="panel-subtitle">{center?.prompt_version}</p></div></div><div className="activity-list">{center?.runs.length ? center.runs.map((run) => <div className="activity-row" key={run.run_id}><span className={`tiny-badge ${run.status === "complete" ? "live" : ""}`}>{run.status}</span><span>{run.scope} · {run.model}</span><time>{new Date(run.created_at).toLocaleString()}</time>{run.error && <small className="negative-text">{run.error}</small>}</div>) : <div className="empty-state">{t("noAiRuns")}</div>}</div></section>
   </div>;
 }
 
@@ -478,6 +713,8 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [activeStock, setActiveStock] = useState<Stock | null>(null);
   const [backtests, setBacktests] = useState<Backtest[]>([]);
+  const [eventCenter, setEventCenter] = useState<EventCenter | null>(null);
+  const [confidenceCenter, setConfidenceCenter] = useState<ConfidenceCenter | null>(null);
   const [horizon, setHorizon] = useState<Horizon>("30D");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -486,17 +723,17 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   const [syncing, setSyncing] = useState(false);
   const [running, setRunning] = useState(false);
   const navItems: { id: View; label: string; icon: string }[] = [
-    { id: "overview", label: t("overview"), icon: "⌁" }, { id: "scanner", label: t("scanner"), icon: "◎" }, { id: "metrics", label: t("metrics"), icon: "↔" }, { id: "backtest", label: t("backtests"), icon: "ƒ" }, { id: "data", label: t("dataPipeline"), icon: "⇄" },
+    { id: "overview", label: t("overview"), icon: "⌁" }, { id: "scanner", label: t("scanner"), icon: "◎" }, { id: "metrics", label: t("metrics"), icon: "↔" }, { id: "events", label: t("events"), icon: "◉" }, { id: "backtest", label: t("backtests"), icon: "ƒ" }, { id: "data", label: t("dataPipeline"), icon: "⇄" },
   ];
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [overviewResult, scannerResult, pipelineResult, backtestResult] = await Promise.all([api<Overview>("/overview"), api<{ items: Stock[] }>("/scanner?horizon=30D"), api<Pipeline>("/pipeline"), api<{ items: Backtest[] }>("/backtests")]);
-      setOverview(overviewResult); setStocks(scannerResult.items); setPipeline(pipelineResult); setBacktests(backtestResult.items);
+      const [overviewResult, scannerResult, pipelineResult, backtestResult, eventResult, confidenceResult] = await Promise.all([api<Overview>("/overview"), api<{ items: Stock[] }>("/scanner?horizon=30D"), api<Pipeline>("/pipeline"), api<{ items: Backtest[] }>("/backtests"), api<EventCenter>("/events"), api<ConfidenceCenter>("/confidence")]);
+      setOverview(overviewResult); setStocks(scannerResult.items); setPipeline(pipelineResult); setBacktests(backtestResult.items); setEventCenter(eventResult); setConfidenceCenter(confidenceResult);
       setActiveStock((current) => scannerResult.items.find((stock) => stock.symbol === current?.symbol) ?? scannerResult.items[0] ?? null);
     } catch (loadError) {
-      setOverview(null); setStocks([]); setActiveStock(null); setPipeline(null); setBacktests([]); setError(loadError instanceof Error ? loadError.message : "API unavailable");
+      setOverview(null); setStocks([]); setActiveStock(null); setPipeline(null); setBacktests([]); setEventCenter(null); setConfidenceCenter(null); setError(loadError instanceof Error ? loadError.message : "API unavailable");
     } finally { setLoading(false); }
   }, []);
   useEffect(() => {
@@ -525,6 +762,7 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
         {!loading && !error && view === "overview" && overview && <div className="page-section"><Header eyebrow={t("realStoredData")} title={t("researchStored")} copy={t("researchStoredCopy")} />{overview.market.bar_count === 0 ? <EmptyMarket onOpenData={() => setView("data")} /> : <><SummaryCards overview={overview} /><div className="content-grid"><div className="panel"><div className="panel-header"><div><h2 className="panel-title">{t("storedUniverse")}</h2><p className="panel-subtitle">{t("realCrossSection")}</p></div><button className="secondary-button" onClick={() => setView("scanner")}>{t("viewScanner")}</button></div><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} />}</div></>}</div>}
         {!loading && !error && view === "scanner" && <div className="page-section"><Header eyebrow="Massive EOD" title={t("compareReal")} copy={t("compareRealCopy")}><div className="segments">{(["10D", "30D", "90D"] as Horizon[]).map((item) => <button key={item} className={`segment-button ${horizon === item ? "active" : ""}`} onClick={() => setHorizon(item)}>{item}</button>)}</div></Header>{!stocks.length ? <EmptyMarket onOpenData={() => setView("data")} /> : <div className="content-grid"><div className="panel"><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} />}</div>}</div>}
         {!loading && !error && view === "metrics" && <MetricsView stocks={stocks} />}
+        {!loading && !error && view === "events" && <EventsView center={eventCenter} confidence={confidenceCenter} stocks={stocks} reload={load} />}
         {!loading && !error && view === "backtest" && <BacktestView backtests={backtests} run={runBacktest} running={running} />}
         {!loading && !error && view === "data" && <DataView pipeline={pipeline} sync={sync} syncing={syncing} />}
       </main></div>{toast && <div className="toast">{toast}</div>}</div>;

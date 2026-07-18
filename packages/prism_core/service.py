@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Literal
+from typing import Any, Literal
 
+from .ai_events import (
+    PROMPT_VERSION,
+    OpenAIEventResearchProvider,
+    OpenAIQuotaExceeded,
+)
 from .backtest import BACKTEST_VERSION, walk_forward_backtest
+from .event_reaction import REACTION_VERSION, compute_event_reaction
 from .forecast import historical_analog_forecast
 from .metrics import CATALOG, METRIC_VERSION, compute_price_metrics
 from .providers.massive import MassiveMarketDataProvider, MassiveQuotaExceeded
@@ -36,6 +43,12 @@ class PrismService:
         self.repository = repository
         api_key = os.getenv("MASSIVE_API_KEY", "").strip()
         self.provider = MassiveMarketDataProvider(api_key=api_key) if api_key else None
+        openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        self.ai_provider = (
+            OpenAIEventResearchProvider(api_key=openai_api_key)
+            if openai_api_key
+            else None
+        )
 
     @property
     def provider_name(self) -> str | None:
@@ -44,6 +57,14 @@ class PrismService:
     @property
     def provider_configured(self) -> bool:
         return self.provider is not None
+
+    @property
+    def ai_configured(self) -> bool:
+        return self.ai_provider is not None
+
+    @property
+    def ai_model(self) -> str | None:
+        return self.ai_provider.model if self.ai_provider else None
 
     def sync_market_data(
         self,
@@ -174,6 +195,32 @@ class PrismService:
             )
             for horizon in (10, 30, 90)
         }
+        horizon_ends = {
+            str(horizon): actual_end
+            + timedelta(days=math.ceil(horizon * 7 / 5) + 4)
+            for horizon in (10, 30, 90)
+        }
+        scheduled_events = []
+        for event in self.repository.list_research_events(
+            scope="company",
+            symbol=ticker,
+            start_date=(actual_end + timedelta(days=1)).isoformat(),
+            end_date=horizon_ends["90"].isoformat(),
+            statuses=["scheduled", "date_uncertain"],
+        ):
+            if not event["event_date_start"]:
+                continue
+            event_date = date.fromisoformat(event["event_date_start"])
+            scheduled_events.append(
+                {
+                    **event,
+                    "forecast_horizons": [
+                        int(horizon)
+                        for horizon, horizon_end in horizon_ends.items()
+                        if event_date <= horizon_end
+                    ],
+                }
+            )
         result = {
             "symbol": ticker,
             "requested_start": start_date.isoformat(),
@@ -187,6 +234,11 @@ class PrismService:
             "metrics": snapshot.values,
             "coverage_warnings": coverage_warnings,
             "forecasts": forecasts,
+            "forecast_horizon_ends": {
+                horizon: value.isoformat()
+                for horizon, value in horizon_ends.items()
+            },
+            "scheduled_events": scheduled_events,
             "series": [
                 {
                     "date": bar.timestamp.astimezone(UTC).date().isoformat(),
@@ -203,6 +255,625 @@ class PrismService:
             result=result,
         )
         return {"analysis_id": analysis_id, **result}
+
+    def event_center(
+        self,
+        *,
+        scope: str | None = None,
+        symbol: str | None = None,
+        limit: int = 200,
+    ) -> dict:
+        events = self.repository.list_research_events(
+            scope=scope,
+            symbol=symbol,
+            limit=limit,
+        )
+        today = date.today()
+        due_count = sum(
+            event["scope"] == "company"
+            and event["status"] in {"scheduled", "date_uncertain"}
+            and event["event_date_start"] is not None
+            and date.fromisoformat(event["event_date_start"]) <= today
+            for event in events
+        )
+        return {
+            "provider": "openai" if self.ai_provider else None,
+            "provider_configured": self.ai_configured,
+            "model": self.ai_model,
+            "prompt_version": PROMPT_VERSION,
+            "due_event_count": due_count,
+            "events": events,
+            "runs": self.repository.list_event_runs(),
+        }
+
+    def confidence_center(
+        self,
+        *,
+        symbol: str | None = None,
+        limit: int = 500,
+    ) -> dict:
+        return {
+            "provider": "openai" if self.ai_provider else None,
+            "provider_configured": self.ai_configured,
+            "model": self.ai_model,
+            "prompt_version": PROMPT_VERSION,
+            "snapshots": self.repository.list_confidence_snapshots(
+                symbol=symbol,
+                limit=limit,
+            ),
+        }
+
+    def refresh_confidence(self, *, symbol: str) -> dict:
+        if not self.ai_provider:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        ticker = symbol.strip().upper()
+        if ticker not in self.repository.list_symbols():
+            raise ValueError(f"No stored market data for {ticker}")
+        as_of = date.today()
+        week_start = as_of - timedelta(days=as_of.weekday())
+        month_start = as_of.replace(day=1)
+        run_id = self.repository.begin_event_run(
+            scope="confidence",
+            symbols=[ticker],
+            window_start=(as_of - timedelta(days=45)).isoformat(),
+            window_end=as_of.isoformat(),
+            provider=self.ai_provider.name,
+            model=self.ai_provider.model,
+            prompt_version=PROMPT_VERSION,
+        )
+        try:
+            research = self.ai_provider.confidence_evidence(
+                symbol=ticker,
+                as_of=as_of,
+            )
+            evidence_rows: list[dict[str, Any]] = []
+            for item in research.payload.evidence:
+                evidence = item.model_dump(mode="json")
+                sources = _sources_for_urls(
+                    evidence["source_urls"],
+                    research.sources,
+                )
+                self.repository.append_confidence_evidence(
+                    symbol=ticker,
+                    period_start=week_start.isoformat(),
+                    evidence=evidence,
+                    sources=sources,
+                    run_id=run_id,
+                )
+                evidence_rows.append({**evidence, "sources": sources})
+
+            institution_groups: dict[str, list[dict[str, Any]]] = {}
+            brand_evidence: list[dict[str, Any]] = []
+            for evidence in evidence_rows:
+                institution = (evidence.get("institution") or "").strip()
+                if institution:
+                    institution_groups.setdefault(institution, []).append(evidence)
+                elif evidence["category"] not in {
+                    "institutional_rating",
+                    "institutional_outlook",
+                }:
+                    brand_evidence.append(evidence)
+
+            snapshots: list[dict[str, Any]] = []
+            for institution, items in sorted(institution_groups.items()):
+                score = _evidence_confidence_score(items)
+                snapshot = _confidence_snapshot(
+                    symbol=ticker,
+                    dimension="institution",
+                    entity=institution,
+                    frequency="weekly",
+                    period_start=week_start.isoformat(),
+                    score=score,
+                    coverage_status="complete",
+                    evidence=items,
+                    components={
+                        "formula": "50 + 25 × confidence-weighted ordinal stance",
+                        "stance_scale": [-2, -1, 0, 1, 2],
+                    },
+                    data_cutoff=None,
+                    provider="openai",
+                    model=research.model,
+                    run_id=run_id,
+                )
+                self.repository.upsert_confidence_snapshot(snapshot)
+                snapshots.append(snapshot)
+
+            bars = self.repository.list_bars(ticker)
+            market_component = _long_term_market_component(bars)
+            institutional_component = (
+                sum(
+                    _evidence_confidence_score(items)
+                    for items in institution_groups.values()
+                )
+                / len(institution_groups)
+                if institution_groups
+                else None
+            )
+            brand_component = (
+                _evidence_confidence_score(brand_evidence)
+                if brand_evidence
+                else None
+            )
+            component_scores = {
+                "market_price": market_component.get("score"),
+                "institutional": institutional_component,
+                "brand_evidence": brand_component,
+            }
+            weights = {
+                "market_price": 0.50,
+                "institutional": 0.30,
+                "brand_evidence": 0.20,
+            }
+            available_weight = sum(
+                weights[key]
+                for key, value in component_scores.items()
+                if value is not None
+            )
+            long_term_score = (
+                sum(
+                    float(value) * weights[key]
+                    for key, value in component_scores.items()
+                    if value is not None
+                )
+                / available_weight
+                if available_weight
+                else None
+            )
+            long_term_evidence = [
+                item for items in institution_groups.values() for item in items
+            ] + brand_evidence
+            long_term = _confidence_snapshot(
+                symbol=ticker,
+                dimension="company_long_term",
+                entity="",
+                frequency="monthly",
+                period_start=month_start.isoformat(),
+                score=long_term_score,
+                coverage_status=(
+                    "complete"
+                    if all(value is not None for value in component_scores.values())
+                    else "partial"
+                    if long_term_score is not None
+                    else "unavailable"
+                ),
+                evidence=long_term_evidence,
+                components={
+                    "formula": "available-component weighted mean",
+                    "weights": weights,
+                    "scores": component_scores,
+                    "market_detail": market_component,
+                },
+                data_cutoff=market_component.get("data_cutoff"),
+                provider="prism+openai",
+                model=research.model,
+                run_id=run_id,
+            )
+            self.repository.upsert_confidence_snapshot(long_term)
+            snapshots.append(long_term)
+            self.repository.finish_event_run(
+                run_id,
+                status="complete",
+                response_id=research.response_id,
+                usage=research.usage,
+            )
+        except OpenAIQuotaExceeded as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="quota",
+                error=str(error),
+            )
+            raise
+        except Exception as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="failed",
+                error=str(error),
+            )
+            raise
+        return {
+            "run_id": run_id,
+            "status": "complete",
+            "symbol": ticker,
+            "snapshots": snapshots,
+        }
+
+    def refresh_world_events(
+        self,
+        *,
+        lookback_days: int = 7,
+        lookahead_days: int = 30,
+    ) -> dict:
+        if not self.ai_provider:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        if lookback_days < 1 or lookback_days > 90:
+            raise ValueError("lookback_days must be between 1 and 90")
+        if lookahead_days < 1 or lookahead_days > 180:
+            raise ValueError("lookahead_days must be between 1 and 180")
+        as_of = date.today()
+        window_start = as_of - timedelta(days=lookback_days)
+        window_end = as_of + timedelta(days=lookahead_days)
+        run_id = self.repository.begin_event_run(
+            scope="world",
+            symbols=[],
+            window_start=window_start.isoformat(),
+            window_end=window_end.isoformat(),
+            provider=self.ai_provider.name,
+            model=self.ai_provider.model,
+            prompt_version=PROMPT_VERSION,
+        )
+        try:
+            research = self.ai_provider.world_events(
+                as_of=as_of,
+                lookback_days=lookback_days,
+                lookahead_days=lookahead_days,
+            )
+            event_ids = [
+                self._store_world_event(
+                    item.model_dump(mode="json"),
+                    run_id=run_id,
+                    model=research.model,
+                    sources=research.sources,
+                )
+                for item in research.payload.events
+            ]
+            self.repository.finish_event_run(
+                run_id,
+                status="complete",
+                response_id=research.response_id,
+                usage=research.usage,
+            )
+        except OpenAIQuotaExceeded as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="quota",
+                error=str(error),
+            )
+            raise
+        except Exception as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="failed",
+                error=str(error),
+            )
+            raise
+        return {
+            "run_id": run_id,
+            "status": "complete",
+            "event_count": len(event_ids),
+            "events": [
+                event
+                for event_id in event_ids
+                if (event := self.repository.get_research_event(event_id))
+            ],
+        }
+
+    def refresh_company_events(
+        self,
+        *,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> dict:
+        if not self.ai_provider:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        ticker = symbol.strip().upper()
+        if ticker not in self.repository.list_symbols():
+            raise ValueError(f"No stored market data for {ticker}")
+        if start_date >= end_date:
+            raise ValueError("Start date must precede end date")
+        if (end_date - start_date).days > 366:
+            raise ValueError("A company event window cannot exceed 366 days")
+        run_id = self.repository.begin_event_run(
+            scope="company",
+            symbols=[ticker],
+            window_start=start_date.isoformat(),
+            window_end=end_date.isoformat(),
+            provider=self.ai_provider.name,
+            model=self.ai_provider.model,
+            prompt_version=PROMPT_VERSION,
+        )
+        try:
+            research = self.ai_provider.company_events(
+                symbol=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                as_of=date.today(),
+            )
+            event_ids = [
+                self._store_company_event(
+                    item.model_dump(mode="json"),
+                    run_id=run_id,
+                    model=research.model,
+                    sources=research.sources,
+                )
+                for item in research.payload.events
+                if item.symbol.upper() == ticker
+            ]
+            self.repository.finish_event_run(
+                run_id,
+                status="complete",
+                response_id=research.response_id,
+                usage=research.usage,
+            )
+        except OpenAIQuotaExceeded as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="quota",
+                error=str(error),
+            )
+            raise
+        except Exception as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="failed",
+                error=str(error),
+            )
+            raise
+        return {
+            "run_id": run_id,
+            "status": "complete",
+            "symbol": ticker,
+            "event_count": len(event_ids),
+            "events": [
+                event
+                for event_id in event_ids
+                if (event := self.repository.get_research_event(event_id))
+            ],
+        }
+
+    def resolve_event(self, event_id: str) -> dict:
+        if not self.ai_provider:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        event = self.repository.get_research_event(event_id)
+        if not event:
+            raise ValueError("Unknown event")
+        run_id = self.repository.begin_event_run(
+            scope="resolution",
+            symbols=[event["symbol"]] if event["symbol"] else [],
+            window_start=event["event_date_start"],
+            window_end=date.today().isoformat(),
+            provider=self.ai_provider.name,
+            model=self.ai_provider.model,
+            prompt_version=PROMPT_VERSION,
+        )
+        try:
+            research = self.ai_provider.event_outcome(
+                event=event,
+                as_of=date.today(),
+            )
+            outcome = research.payload.model_dump(mode="json")
+            sources = _sources_for_urls(outcome["source_urls"], research.sources)
+            self.repository.append_event_observation(
+                event_id=event_id,
+                phase="post_event",
+                run_id=run_id,
+                payload=outcome,
+                sources=sources,
+            )
+            if outcome["event_status"] != "not_yet_available":
+                event_for_reaction = {
+                    **event,
+                    "event_date_start": (
+                        outcome["actual_event_date"]
+                        or event["event_date_start"]
+                    ),
+                }
+                reaction = compute_event_reaction(
+                    self.repository,
+                    event_for_reaction,
+                )
+                self.repository.update_event_outcome(
+                    event_id,
+                    status=outcome["event_status"],
+                    actual_event_date=outcome["actual_event_date"],
+                    actual={**outcome, "sources": sources},
+                    reaction=reaction,
+                    run_id=run_id,
+                )
+            self.repository.finish_event_run(
+                run_id,
+                status="complete",
+                response_id=research.response_id,
+                usage=research.usage,
+            )
+        except OpenAIQuotaExceeded as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="quota",
+                error=str(error),
+            )
+            raise
+        except Exception as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="failed",
+                error=str(error),
+            )
+            raise
+        return {
+            "run_id": run_id,
+            "status": "complete",
+            "event": self.repository.get_research_event(event_id),
+            "resolution": outcome,
+        }
+
+    def resolve_due_events(self, *, limit: int = 5) -> dict:
+        if not self.ai_provider:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        if limit < 1 or limit > 20:
+            raise ValueError("limit must be between 1 and 20")
+        today = date.today()
+        due = [
+            event
+            for event in self.repository.list_research_events(
+                scope="company",
+                statuses=["scheduled", "date_uncertain"],
+            )
+            if event["event_date_start"]
+            and date.fromisoformat(event["event_date_start"]) <= today
+        ][:limit]
+        completed: list[str] = []
+        quota_stopped = False
+        for event in due:
+            try:
+                self.resolve_event(event["event_id"])
+                completed.append(event["event_id"])
+            except OpenAIQuotaExceeded:
+                quota_stopped = True
+                break
+        return {
+            "status": "quota" if quota_stopped else "complete",
+            "attempted": len(completed) + int(quota_stopped),
+            "completed": completed,
+            "not_attempted": [
+                event["event_id"] for event in due[len(completed) + int(quota_stopped) :]
+            ],
+        }
+
+    def recompute_event_reactions(self) -> dict:
+        events = self.repository.list_research_events(
+            scope="company",
+            statuses=["occurred"],
+        )
+        run_id = self.repository.begin_event_run(
+            scope="reaction",
+            symbols=sorted(
+                {event["symbol"] for event in events if event["symbol"]}
+            ),
+            window_start=None,
+            window_end=date.today().isoformat(),
+            provider="prism",
+            model=REACTION_VERSION,
+            prompt_version=REACTION_VERSION,
+        )
+        updated: list[str] = []
+        try:
+            for event in events:
+                reaction = compute_event_reaction(self.repository, event)
+                self.repository.update_event_outcome(
+                    event["event_id"],
+                    status=event["status"],
+                    actual_event_date=event["event_date_start"],
+                    actual=event["actual"],
+                    reaction=reaction,
+                    run_id=run_id,
+                )
+                self.repository.append_event_observation(
+                    event_id=event["event_id"],
+                    phase="market_reaction",
+                    run_id=run_id,
+                    payload=reaction,
+                    sources=[],
+                )
+                updated.append(event["event_id"])
+            self.repository.finish_event_run(run_id, status="complete")
+        except Exception as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="failed",
+                error=str(error),
+            )
+            raise
+        return {
+            "run_id": run_id,
+            "status": "complete",
+            "updated": updated,
+        }
+
+    def _store_world_event(
+        self,
+        item: dict,
+        *,
+        run_id: str,
+        model: str,
+        sources: list[dict[str, str]],
+    ) -> str:
+        event = {
+            "dedupe_key": _event_dedupe_key("world", None, item),
+            "scope": "world",
+            "symbol": None,
+            "event_type": item["event_type"],
+            "status": item["status"],
+            "title": item["title"],
+            "summary": item["summary"],
+            "event_date_start": item["event_date_start"],
+            "event_date_end": item["event_date_end"],
+            "release_timing": None,
+            "importance": item["importance"],
+            "confidence": item["confidence"],
+            "regions": item["regions"],
+            "affected_assets": item["affected_assets"],
+            "watch_items": item["watch_items"],
+            "expectations": {
+                "why_markets_care": item["why_markets_care"],
+            },
+            "actual": {},
+            "reaction": {},
+            "sources": _sources_for_urls(item["source_urls"], sources),
+            "provider": "openai",
+            "model": model,
+            "prompt_version": PROMPT_VERSION,
+        }
+        event_id = self.repository.upsert_research_event(event, run_id=run_id)
+        self.repository.append_event_observation(
+            event_id=event_id,
+            phase="world_snapshot",
+            run_id=run_id,
+            payload=item,
+            sources=event["sources"],
+        )
+        return event_id
+
+    def _store_company_event(
+        self,
+        item: dict,
+        *,
+        run_id: str,
+        model: str,
+        sources: list[dict[str, str]],
+    ) -> str:
+        ticker = item["symbol"].upper()
+        event = {
+            "dedupe_key": _event_dedupe_key("company", ticker, item),
+            "scope": "company",
+            "symbol": ticker,
+            "event_type": item["event_type"],
+            "status": item["status"],
+            "title": item["title"],
+            "summary": item["summary"],
+            "event_date_start": item["event_date_start"],
+            "event_date_end": item["event_date_end"],
+            "release_timing": item["release_timing"],
+            "importance": item["importance"],
+            "confidence": item["confidence"],
+            "regions": [],
+            "affected_assets": [ticker],
+            "watch_items": item["watch_items"],
+            "expectations": {
+                "market_expectations": item["market_expectations"],
+                "bullish_scenario": item["bullish_scenario"],
+                "bearish_scenario": item["bearish_scenario"],
+            },
+            "actual": {},
+            "reaction": {},
+            "sources": _sources_for_urls(item["source_urls"], sources),
+            "provider": "openai",
+            "model": model,
+            "prompt_version": PROMPT_VERSION,
+        }
+        event_id = self.repository.upsert_research_event(event, run_id=run_id)
+        self.repository.append_event_observation(
+            event_id=event_id,
+            phase=(
+                "scheduled"
+                if item["status"] in {"scheduled", "date_uncertain"}
+                else "current"
+            ),
+            run_id=run_id,
+            payload=item,
+            sources=event["sources"],
+        )
+        return event_id
 
     def _raw_snapshots(self) -> list[dict]:
         snapshots: list[dict] = []
@@ -481,3 +1152,148 @@ class PrismService:
             "analyses": self.repository.list_range_analyses(),
             "metric_version": METRIC_VERSION,
         }
+
+
+def _event_dedupe_key(
+    scope: str,
+    symbol: str | None,
+    item: dict,
+) -> str:
+    raw = "|".join(
+        [
+            scope,
+            symbol or "",
+            str(item.get("event_type") or ""),
+            str(item.get("event_date_start") or ""),
+            " ".join(str(item.get("title") or "").lower().split()),
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _sources_for_urls(
+    urls: list[str],
+    sources: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    requested = set(urls)
+    return [
+        source
+        for source in sources
+        if source.get("url") in requested
+    ]
+
+
+def _evidence_confidence_score(evidence: list[dict[str, Any]]) -> float:
+    total_weight = sum(max(float(item["confidence"]), 0.05) for item in evidence)
+    weighted_stance = sum(
+        int(item["stance"]) * max(float(item["confidence"]), 0.05)
+        for item in evidence
+    ) / total_weight
+    return round(max(0.0, min(100.0, 50.0 + 25.0 * weighted_stance)), 1)
+
+
+def _long_term_market_component(bars: list[Any]) -> dict[str, Any]:
+    if len(bars) < 127:
+        return {
+            "score": None,
+            "coverage_status": "unavailable",
+            "reason": "At least 127 stored sessions are required",
+            "data_cutoff": bars[-1].available_at.isoformat() if bars else None,
+        }
+    closes = [float(bar.close) for bar in bars]
+    return_126 = closes[-1] / closes[-127] - 1.0
+    return_252 = closes[-1] / closes[-253] - 1.0 if len(closes) >= 253 else None
+    trailing = closes[-253:] if len(closes) >= 253 else closes[-127:]
+    drawdown = closes[-1] / max(trailing) - 1.0
+    scores = {
+        "momentum_6m": 50.0 + 50.0 * math.tanh(return_126 / 0.30),
+        "momentum_12m": (
+            50.0 + 50.0 * math.tanh(return_252 / 0.45)
+            if return_252 is not None
+            else None
+        ),
+        "drawdown_resilience": 100.0 * max(0.0, 1.0 + drawdown),
+    }
+    weights = {"momentum_6m": 0.45, "momentum_12m": 0.35, "drawdown_resilience": 0.20}
+    available_weight = sum(
+        weights[key] for key, value in scores.items() if value is not None
+    )
+    score = sum(
+        float(value) * weights[key]
+        for key, value in scores.items()
+        if value is not None
+    ) / available_weight
+    return {
+        "score": round(max(0.0, min(100.0, score)), 1),
+        "coverage_status": "complete" if return_252 is not None else "partial",
+        "return_126": return_126,
+        "return_252": return_252,
+        "drawdown": drawdown,
+        "component_scores": {
+            key: round(value, 1) if value is not None else None
+            for key, value in scores.items()
+        },
+        "formula_weights": weights,
+        "data_cutoff": bars[-1].available_at.isoformat(),
+    }
+
+
+def _confidence_snapshot(
+    *,
+    symbol: str,
+    dimension: str,
+    entity: str,
+    frequency: str,
+    period_start: str,
+    score: float | None,
+    coverage_status: str,
+    evidence: list[dict[str, Any]],
+    components: dict[str, Any],
+    data_cutoff: str | None,
+    provider: str,
+    model: str,
+    run_id: str,
+) -> dict[str, Any]:
+    identity = "|".join(
+        [symbol.upper(), dimension, entity, frequency, period_start]
+    )
+    sources: dict[str, dict[str, str]] = {}
+    for item in evidence:
+        for source in item.get("sources", []):
+            if source.get("url"):
+                sources[source["url"]] = source
+    return {
+        "snapshot_key": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+        "symbol": symbol.upper(),
+        "dimension": dimension,
+        "entity": entity,
+        "frequency": frequency,
+        "period_start": period_start,
+        "score": round(score, 1) if score is not None else None,
+        "coverage_status": coverage_status,
+        "evidence_count": len(evidence),
+        "components": {
+            **components,
+            "evidence": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "institution",
+                        "category",
+                        "stance",
+                        "statement",
+                        "rationale",
+                        "published_date",
+                        "confidence",
+                    )
+                }
+                for item in evidence
+            ],
+        },
+        "sources": list(sources.values()),
+        "data_cutoff": data_cutoff,
+        "provider": provider,
+        "model": model,
+        "prompt_version": PROMPT_VERSION,
+        "run_id": run_id,
+    }
