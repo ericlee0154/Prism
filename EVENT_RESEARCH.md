@@ -19,6 +19,14 @@ directly.
 No working Codex CLI ChatGPT login means no AI event or confidence data. There
 are no default events, institutions, scores, or brand signals.
 
+Every newly researched world or company event stores English research text and
+a faithful Traditional Chinese translation in the same schema-bound result.
+Each cited page also stores its source language (`EN`, `ZH`, `JA`, `KO`,
+`OTHER`, or `UNKNOWN`). The UI follows the selected application language and
+always keeps a separate “View original” link. Older stored events remain
+unchanged and visibly report that a Chinese translation is unavailable until a
+new sourced refresh replaces them.
+
 ## Event lifecycle
 
 ```text

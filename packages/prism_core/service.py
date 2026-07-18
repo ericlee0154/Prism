@@ -235,6 +235,7 @@ class PrismService:
             start_date=(actual_end + timedelta(days=1)).isoformat(),
             end_date=horizon_ends["90"].isoformat(),
             statuses=["scheduled", "date_uncertain"],
+            prompt_version=PROMPT_VERSION,
         ):
             if not event["event_date_start"]:
                 continue
@@ -294,6 +295,7 @@ class PrismService:
         events = self.repository.list_research_events(
             scope=scope,
             symbol=symbol,
+            prompt_version=PROMPT_VERSION,
             limit=limit,
         )
         today = date.today()
@@ -737,6 +739,7 @@ class PrismService:
             for event in self.repository.list_research_events(
                 scope="company",
                 statuses=["scheduled", "date_uncertain"],
+                prompt_version=PROMPT_VERSION,
             )
             if event["event_date_start"]
             and date.fromisoformat(event["event_date_start"]) <= today
@@ -763,6 +766,7 @@ class PrismService:
         events = self.repository.list_research_events(
             scope="company",
             statuses=["occurred"],
+            prompt_version=PROMPT_VERSION,
         )
         run_id = self.repository.begin_event_run(
             scope="reaction",
@@ -835,10 +839,14 @@ class PrismService:
             "watch_items": item["watch_items"],
             "expectations": {
                 "why_markets_care": item["why_markets_care"],
+                "translation_zh": item["translation_zh"],
             },
             "actual": {},
             "reaction": {},
-            "sources": _sources_for_urls(item["source_urls"], sources),
+            "sources": _sources_for_references(
+                item["source_references"],
+                sources,
+            ),
             "provider": self.ai_provider.name,
             "model": model,
             "prompt_version": PROMPT_VERSION,
@@ -882,10 +890,14 @@ class PrismService:
                 "market_expectations": item["market_expectations"],
                 "bullish_scenario": item["bullish_scenario"],
                 "bearish_scenario": item["bearish_scenario"],
+                "translation_zh": item["translation_zh"],
             },
             "actual": {},
             "reaction": {},
-            "sources": _sources_for_urls(item["source_urls"], sources),
+            "sources": _sources_for_references(
+                item["source_references"],
+                sources,
+            ),
             "provider": self.ai_provider.name,
             "model": model,
             "prompt_version": PROMPT_VERSION,
@@ -1210,6 +1222,31 @@ def _sources_for_urls(
         for source in sources
         if source.get("url") in requested
     ]
+
+
+def _sources_for_references(
+    references: list[dict[str, str]],
+    sources: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    source_map = {
+        source.get("url"): source
+        for source in sources
+        if source.get("url")
+    }
+    matched: list[dict[str, str]] = []
+    for reference in references:
+        url = reference.get("url")
+        source = source_map.get(url)
+        if not source:
+            continue
+        matched.append(
+            {
+                "url": source["url"],
+                "title": source.get("title", ""),
+                "language": reference.get("language", "UNKNOWN"),
+            }
+        )
+    return matched
 
 
 def _evidence_confidence_score(evidence: list[dict[str, Any]]) -> float:

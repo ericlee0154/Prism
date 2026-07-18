@@ -147,8 +147,8 @@ class CodexCliEventResearchProvider(OpenAIEventResearchProvider):
                 "Execution boundary: use web search for this research task. "
                 "Do not run shell commands, edit files, call connectors, or access local "
                 "user data. Return only JSON that matches the supplied output schema. "
-                "For every non-empty result, source_urls must contain exact public URLs "
-                "you retrieved with web search during this run. "
+                "For every non-empty result, every source URL or source_references URL "
+                "must be an exact public URL retrieved with web search during this run. "
                 f"Application prompt version: {PROMPT_VERSION}.\n\n"
                 f"Research request:\n{input_text}"
             )
@@ -412,6 +412,13 @@ def _source_urls_from_payload(payload: BaseModel) -> list[str]:
             for key, item in value.items():
                 if key == "source_urls" and isinstance(item, list):
                     urls.extend(url for url in item if isinstance(url, str))
+                elif key == "source_references" and isinstance(item, list):
+                    urls.extend(
+                        str(reference["url"])
+                        for reference in item
+                        if isinstance(reference, dict)
+                        and isinstance(reference.get("url"), str)
+                    )
                 else:
                     collect(item)
         elif isinstance(value, list):

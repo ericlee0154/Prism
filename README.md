@@ -121,6 +121,12 @@ source list. It never substitutes generated events when login, network,
 evidence, or ChatGPT/Codex usage is unavailable. Usage-limit failures stop the
 operation immediately without retry.
 
+New world and company event records contain both English research text and a
+faithful Traditional Chinese translation. Each citation records the page's
+source language and exposes a separate direct **View original** link. Older
+records without translation metadata remain visibly untranslated until the
+next sourced refresh.
+
 Company events can be researched directly from a forecast window. Scheduled
 earnings and major announcements are attached to every applicable 10-, 30-, or
 90-session horizon. After the event, Prism stores a sourced outcome and

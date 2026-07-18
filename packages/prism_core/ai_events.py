@@ -11,7 +11,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 
-PROMPT_VERSION = "event-research-v0.2"
+PROMPT_VERSION = "event-research-v0.3"
 DEFAULT_EVENT_MODEL = "gpt-5.6-sol"
 
 
@@ -21,6 +21,18 @@ class OpenAIQuotaExceeded(RuntimeError):
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class ResearchSourceReference(StrictModel):
+    url: str
+    language: Literal["EN", "ZH", "JA", "KO", "OTHER", "UNKNOWN"]
+
+
+class WorldEventTranslationZh(StrictModel):
+    title: str
+    summary: str
+    why_markets_care: str
+    watch_items: list[str]
 
 
 class WorldEventItem(StrictModel):
@@ -48,12 +60,22 @@ class WorldEventItem(StrictModel):
     watch_items: list[str]
     importance: int = Field(ge=1, le=5)
     confidence: float = Field(ge=0, le=1)
-    source_urls: list[str]
+    translation_zh: WorldEventTranslationZh
+    source_references: list[ResearchSourceReference]
 
 
 class WorldEventFeed(StrictModel):
     as_of: date
     events: list[WorldEventItem]
+
+
+class CompanyEventTranslationZh(StrictModel):
+    title: str
+    summary: str
+    market_expectations: list[str]
+    bullish_scenario: str
+    bearish_scenario: str
+    watch_items: list[str]
 
 
 class CompanyEventItem(StrictModel):
@@ -86,7 +108,8 @@ class CompanyEventItem(StrictModel):
     watch_items: list[str]
     importance: int = Field(ge=1, le=5)
     confidence: float = Field(ge=0, le=1)
-    source_urls: list[str]
+    translation_zh: CompanyEventTranslationZh
+    source_references: list[ResearchSourceReference]
 
 
 class CompanyEventFeed(StrictModel):
@@ -180,7 +203,12 @@ class OpenAIEventResearchProvider:
                 "Find only material world events with plausible effects on liquid markets. "
                 "Use live web search. Prefer central banks, governments, regulators, "
                 "international organizations, and established reporting. "
-                "Every event must include at least one exact source URL retrieved in this run. "
+                "Write the primary title, summary, analysis, and watch items in English. "
+                "Also provide a faithful Traditional Chinese translation in translation_zh; "
+                "the translation must add no facts or interpretation. "
+                "Every event must include at least one source_references entry whose exact URL "
+                "was retrieved in this run. Label each page's actual source language as EN, ZH, "
+                "JA, KO, OTHER, or UNKNOWN. "
                 "Return no event when evidence or dates are too weak. "
                 "Separate confirmed facts from market interpretation. "
                 "Do not invent prices, forecasts, consensus estimates, or dates."
@@ -213,7 +241,12 @@ class OpenAIEventResearchProvider:
                 "SEC filings, exchanges, and regulators; use established reporting second. "
                 "Track earnings, product launches, investor days, conferences, regulatory "
                 "decisions, capital actions, and material legal events. "
-                "Every event must include at least one exact source URL retrieved in this run. "
+                "Write the primary title, summary, expectations, scenarios, and watch items "
+                "in English. Also provide a faithful Traditional Chinese translation in "
+                "translation_zh; the translation must add no facts or interpretation. "
+                "Every event must include at least one source_references entry whose exact URL "
+                "was retrieved in this run. Label each page's actual source language as EN, ZH, "
+                "JA, KO, OTHER, or UNKNOWN. "
                 "Return no event when evidence is insufficient. "
                 "Market expectations and scenarios must be clearly labeled analysis, not fact. "
                 "Do not invent prices, dates, consensus estimates, or results."
@@ -452,10 +485,40 @@ def _retain_grounded_items(
 
     grounded = []
     for event in getattr(payload, "events"):
+        if hasattr(event, "source_references"):
+            matched_references = _matched_source_references(
+                event.source_references,
+                sources,
+            )
+            if matched_references:
+                grounded.append(
+                    event.model_copy(
+                        update={"source_references": matched_references}
+                    )
+                )
+            continue
         matched = _matched_urls(event.source_urls, sources)
         if matched:
             grounded.append(event.model_copy(update={"source_urls": matched}))
     return payload.model_copy(update={"events": grounded})
+
+
+def _matched_source_references(
+    references: list[ResearchSourceReference],
+    sources: list[dict[str, str]],
+) -> list[ResearchSourceReference]:
+    source_map = {
+        _canonical_url(source.get("url", "")): source.get("url", "")
+        for source in sources
+    }
+    matched: list[ResearchSourceReference] = []
+    for reference in references:
+        canonical = _canonical_url(reference.url)
+        if canonical in source_map:
+            matched.append(
+                reference.model_copy(update={"url": source_map[canonical]})
+            )
+    return matched
 
 
 def _matched_urls(

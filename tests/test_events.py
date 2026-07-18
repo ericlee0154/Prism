@@ -9,11 +9,13 @@ from packages.prism_core.ai_events import (
     AIResearchResult,
     CompanyEventFeed,
     CompanyEventItem,
+    CompanyEventTranslationZh,
     ConfidenceEvidenceItem,
     ConfidenceResearchFeed,
     EventOutcome,
     OpenAIEventResearchProvider,
     OpenAIQuotaExceeded,
+    ResearchSourceReference,
     WorldEventFeed,
 )
 from packages.prism_core.codex_cli_events import (
@@ -49,7 +51,19 @@ def test_openai_event_provider_keeps_only_retrieved_sources() -> None:
                 "watch_items": ["policy rate"],
                 "importance": 5,
                 "confidence": 0.9,
-                "source_urls": [source_url, "https://invented.example/not-retrieved"],
+                "translation_zh": {
+                    "title": "央行決策",
+                    "summary": "一項已排定的政策決策。",
+                    "why_markets_care": "利率可能影響資產估值。",
+                    "watch_items": ["政策利率"],
+                },
+                "source_references": [
+                    {"url": source_url, "language": "EN"},
+                    {
+                        "url": "https://invented.example/not-retrieved",
+                        "language": "EN",
+                    },
+                ],
             }
         ],
     }
@@ -108,7 +122,9 @@ def test_openai_event_provider_keeps_only_retrieved_sources() -> None:
     assert request_count == 1
     assert result.response_id == "resp_test"
     assert len(result.payload.events) == 1
-    assert result.payload.events[0].source_urls == [source_url]
+    assert result.payload.events[0].source_references == [
+        ResearchSourceReference(url=source_url, language="EN")
+    ]
 
 
 def test_openai_event_provider_does_not_retry_quota() -> None:
@@ -152,9 +168,18 @@ def test_codex_cli_provider_returns_schema_bound_grounded_output(
                 "watch_items": ["policy rate"],
                 "importance": 5,
                 "confidence": 0.9,
-                "source_urls": [
-                    source_url,
-                    "https://invented.example/not-retrieved",
+                "translation_zh": {
+                    "title": "政策決策",
+                    "summary": "一項已確認的政策決策已排定。",
+                    "why_markets_care": "該決策可能影響利率。",
+                    "watch_items": ["政策利率"],
+                },
+                "source_references": [
+                    {"url": source_url, "language": "EN"},
+                    {
+                        "url": "https://invented.example/not-retrieved",
+                        "language": "EN",
+                    },
                 ],
             }
         ],
@@ -226,7 +251,9 @@ def test_codex_cli_provider_returns_schema_bound_grounded_output(
     assert captured["environment"].get("MASSIVE_API_KEY") is None
     assert result.response_id == "thread_test"
     assert result.usage == {"total_tokens": 123}
-    assert result.payload.events[0].source_urls == [source_url]
+    assert result.payload.events[0].source_references == [
+        ResearchSourceReference(url=source_url, language="EN")
+    ]
 
 
 def test_codex_cli_provider_stops_on_chatgpt_usage_limit() -> None:
@@ -334,7 +361,20 @@ def test_company_event_lifecycle_connects_forecast_and_market_reaction(
                             watch_items=["guidance"],
                             importance=5,
                             confidence=0.95,
-                            source_urls=[source_url],
+                            translation_zh=CompanyEventTranslationZh(
+                                title="季度財報",
+                                summary="已排定季度財報發布。",
+                                market_expectations=["營收成長"],
+                                bullish_scenario="結果高於已述預期。",
+                                bearish_scenario="結果低於已述預期。",
+                                watch_items=["財測"],
+                            ),
+                            source_references=[
+                                ResearchSourceReference(
+                                    url=source_url,
+                                    language="EN",
+                                )
+                            ],
                         )
                     ],
                 ),
@@ -374,6 +414,9 @@ def test_company_event_lifecycle_connects_forecast_and_market_reaction(
         end_date=date(2025, 6, 1),
     )
     event_id = refreshed["events"][0]["event_id"]
+    stored_event = refreshed["events"][0]
+    assert stored_event["expectations"]["translation_zh"]["title"] == "季度財報"
+    assert stored_event["sources"][0]["language"] == "EN"
 
     analysis = service.analyze_range(
         "AAPL",

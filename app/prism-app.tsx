@@ -50,7 +50,16 @@ type Forecast = {
   positive_probability?: number | null;
   analog_dates?: string[];
 };
-type EventSource = { title: string; url: string };
+type EventSource = { title: string; url: string; language?: string };
+type EventTranslationZh = {
+  title?: string;
+  summary?: string;
+  why_markets_care?: string;
+  market_expectations?: string[];
+  bullish_scenario?: string;
+  bearish_scenario?: string;
+  watch_items?: string[];
+};
 type EventReturn = {
   status: "complete" | "pending";
   symbol_return: number | null;
@@ -338,6 +347,13 @@ const translations = {
   marketReaction: { zh: "本機市場反應", en: "Local market reaction" },
   watchItems: { zh: "觀察重點", en: "Watch items" },
   sources: { zh: "來源", en: "Sources" },
+  sourceLanguage: { zh: "來源語言", en: "Source language" },
+  sourceLanguageUnknown: { zh: "未記錄", en: "Not recorded" },
+  viewOriginal: { zh: "查看原文", en: "View original" },
+  translationUnavailable: {
+    zh: "此舊資料尚無中文翻譯；重新研究後才會補齊。",
+    en: "This older record has no Chinese translation yet; refresh research to add it.",
+  },
   resolveEvent: { zh: "查詢實際結果", en: "Research actual outcome" },
   eventDate: { zh: "事件日期", en: "Event date" },
   confidence: { zh: "信心", en: "Confidence" },
@@ -457,6 +473,47 @@ const dateToDay = (value: string) => Math.floor(new Date(`${isoDate(value)}T12:0
 const dayToDate = (value: number) => new Date(value * 86_400_000).toISOString().slice(0, 10);
 const formatPercent = (value: number | null | undefined, digits = 2) => value == null ? "—" : `${(value * 100).toFixed(digits)}%`;
 const scoreFor = (stock: Stock, horizon: Horizon) => horizon === "10D" ? stock.score10 : horizon === "30D" ? stock.score30 : stock.score90;
+
+function localizedEventContent(event: ResearchEvent, language: Language) {
+  const candidate = event.expectations.translation_zh;
+  const translation = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? candidate as EventTranslationZh
+    : null;
+  const expectations = Object.fromEntries(
+    Object.entries(event.expectations)
+      .filter(([key]) => key !== "translation_zh")
+      .map(([key, value]) => [
+        key,
+        language === "zh" && translation?.[key as keyof EventTranslationZh] != null
+          ? translation[key as keyof EventTranslationZh]
+          : value,
+      ]),
+  );
+  return {
+    title: language === "zh" && translation?.title ? translation.title : event.title,
+    summary: language === "zh" && translation?.summary ? translation.summary : event.summary,
+    watchItems: language === "zh" && translation?.watch_items
+      ? translation.watch_items
+      : event.watch_items,
+    expectations,
+    hasChineseTranslation: Boolean(translation?.title && translation?.summary),
+  };
+}
+
+function EventSourceLinks({ sources, heading = true }: { sources: EventSource[]; heading?: boolean }) {
+  const { language, t } = useI18n();
+  return <div className="event-source-links">
+    {heading && <strong>{t("sources")}</strong>}
+    <div className="event-source-list">{sources.map((source) => {
+      const sourceName = source.title || new URL(source.url).hostname;
+      return <div className="event-source-item" key={source.url}>
+        <span className="event-source-name">{sourceName}</span>
+        <span className="source-language">{t("sourceLanguage")}{language === "zh" ? "：" : ": "}{source.language || t("sourceLanguageUnknown")}</span>
+        <a href={source.url} target="_blank" rel="noopener noreferrer" aria-label={`${t("viewOriginal")}: ${sourceName}`}>{t("viewOriginal")} ↗</a>
+      </div>;
+    })}</div>
+  </div>;
+}
 
 function useFormatters() {
   const { language } = useI18n();
@@ -615,7 +672,10 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
         {[10, 30, 90].map((horizon) => { const forecast = analysis.forecasts[String(horizon)]; return <div className="forecast-card" key={horizon}><div className="forecast-top"><strong>{horizon} {t("sessions")}</strong><span className="tiny-badge">{forecast.status}</span></div>{forecast.status === "complete" ? <><div><span>{t("medianReturn")}</span><strong className="mono">{formatPercent(forecast.median_return)}</strong></div><div><span>{t("range1090")}</span><strong className="mono">{formatPercent(forecast.p10_return)} → {formatPercent(forecast.p90_return)}</strong></div><div><span>{t("positiveProbability")}</span><strong className="mono">{formatPercent(forecast.positive_probability, 1)}</strong></div><small>{forecast.sample_count} {t("analogSamples")}</small></> : <p>{t("insufficient")} ({forecast.sample_count})</p>}</div>; })}
       </div></div>
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("forecastWindowEvents")}</h2><p className="panel-subtitle">{analysis.actual_end} → {analysis.forecast_horizon_ends["90"]}</p></div><button className="secondary-button" disabled={eventRefreshing} onClick={() => void researchForecastEvents()}>{eventRefreshing ? t("refreshingEvents") : t("researchForecastEvents")}</button></div>
-        {analysis.scheduled_events.length ? <div className="forecast-event-list">{analysis.scheduled_events.map((event) => <article className="forecast-event-row" key={event.event_id}><div><div className="event-card-top"><span className="tiny-badge">{event.event_type}</span><strong>{event.symbol} · {event.title}</strong></div><p>{event.summary}</p><div className="note-tags">{event.forecast_horizons?.map((item) => <span className="tiny-badge live" key={item}>{item}D</span>)}</div></div><div><strong className="mono">{event.event_date_start ?? "—"}</strong><div className="event-source-links">{event.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">{source.title || new URL(source.url).hostname}</a>)}</div></div></article>)}</div> : <div className="empty-state">{t("noForecastEvents")}</div>}
+        {analysis.scheduled_events.length ? <div className="forecast-event-list">{analysis.scheduled_events.map((event) => {
+          const content = localizedEventContent(event, language);
+          return <article className="forecast-event-row" key={event.event_id}><div><div className="event-card-top"><span className="tiny-badge">{event.event_type}</span><strong>{event.symbol} · {content.title}</strong></div><p>{content.summary}</p><div className="note-tags">{event.forecast_horizons?.map((item) => <span className="tiny-badge live" key={item}>{item}D</span>)}</div></div><div><strong className="mono">{event.event_date_start ?? "—"}</strong><EventSourceLinks sources={event.sources} heading={false} /></div></article>;
+        })}</div> : <div className="empty-state">{t("noForecastEvents")}</div>}
       </div>
       <p className="forecast-footnote">{language === "zh" ? "此 forecast 僅供研究與回測設計，不構成投資建議。" : "This forecast supports research and backtest design only; it is not investment advice."}</p>
     </>}
@@ -623,7 +683,8 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
 }
 
 function EventCard({ event, onResolve, busy }: { event: ResearchEvent; onResolve: (eventId: string) => Promise<void>; busy: boolean }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
+  const content = localizedEventContent(event, language);
   const actualResults = Array.isArray(event.actual.actual_results)
     ? event.actual.actual_results.filter((item): item is string => typeof item === "string")
     : [];
@@ -631,13 +692,14 @@ function EventCard({ event, onResolve, busy }: { event: ResearchEvent; onResolve
   const canResolve = event.scope === "company" && ["scheduled", "date_uncertain"].includes(event.status);
   return <article className="event-card">
     <div className="event-card-top"><div className="note-tags"><span className={`tiny-badge ${event.status === "occurred" ? "live" : ""}`}>{event.status}</span><span className="tiny-badge">{event.event_type}</span>{event.symbol && <span className="tiny-badge">{event.symbol}</span>}</div><span className="mono event-date">{event.event_date_start ?? "—"}</span></div>
-    <h3>{event.title}</h3><p>{event.summary}</p>
+    <h3>{content.title}</h3><p>{content.summary}</p>
+    {language === "zh" && !content.hasChineseTranslation && <small className="translation-unavailable">{t("translationUnavailable")}</small>}
     <div className="event-facts"><span>{t("importance")} <strong>{event.importance}/5</strong></span><span>{t("confidence")} <strong>{formatPercent(event.confidence, 0)}</strong></span><span>{event.model}</span></div>
-    {Object.keys(event.expectations).length > 0 && <div className="event-detail"><strong>{t("expectations")}</strong>{Object.entries(event.expectations).map(([key, value]) => Array.isArray(value) ? <div key={key}><small>{key.replaceAll("_", " ")}</small><ul>{value.filter((item): item is string => typeof item === "string").map((item) => <li key={item}>{item}</li>)}</ul></div> : value ? <p key={key}><small>{key.replaceAll("_", " ")}</small>{String(value)}</p> : null)}</div>}
-    {event.watch_items.length > 0 && <div className="event-detail"><strong>{t("watchItems")}</strong><ul>{event.watch_items.map((item) => <li key={item}>{item}</li>)}</ul></div>}
+    {Object.keys(content.expectations).length > 0 && <div className="event-detail"><strong>{t("expectations")}</strong>{Object.entries(content.expectations).map(([key, value]) => Array.isArray(value) ? <div key={key}><small>{key.replaceAll("_", " ")}</small><ul>{value.filter((item): item is string => typeof item === "string").map((item) => <li key={item}>{item}</li>)}</ul></div> : value ? <p key={key}><small>{key.replaceAll("_", " ")}</small>{String(value)}</p> : null)}</div>}
+    {content.watchItems.length > 0 && <div className="event-detail"><strong>{t("watchItems")}</strong><ul>{content.watchItems.map((item) => <li key={item}>{item}</li>)}</ul></div>}
     {actualResults.length > 0 && <div className="event-detail actual"><strong>{t("actualResult")}</strong><ul>{actualResults.map((item) => <li key={item}>{item}</li>)}</ul></div>}
     {Object.keys(reactionReturns).length > 0 && <div className="event-detail reaction"><strong>{t("marketReaction")}</strong><div className="reaction-grid">{[1, 5, 20].map((sessions) => { const item = reactionReturns[`${sessions}_session`]; return <div key={sessions}><small>{sessions}D</small><b className="mono">{formatPercent(item?.symbol_return)}</b><span className="mono">excess {formatPercent(item?.excess_return)}</span></div>; })}</div><small>{event.reaction.benchmark ?? "SPY"} · cutoff {event.reaction.data_cutoff ?? "—"}</small></div>}
-    <div className="event-card-footer"><div className="event-source-links"><strong>{t("sources")}</strong>{event.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">{source.title || new URL(source.url).hostname} ↗</a>)}</div>{canResolve && <button className="secondary-button" disabled={busy} onClick={() => void onResolve(event.event_id)}>{t("resolveEvent")}</button>}</div>
+    <div className="event-card-footer"><EventSourceLinks sources={event.sources} />{canResolve && <button className="secondary-button" disabled={busy} onClick={() => void onResolve(event.event_id)}>{t("resolveEvent")}</button>}</div>
   </article>;
 }
 

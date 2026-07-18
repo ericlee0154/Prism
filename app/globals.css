@@ -2146,9 +2146,8 @@ button.history-row:hover strong {
 }
 
 .event-source-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
+  display: grid;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -2165,6 +2164,48 @@ button.history-row:hover strong {
 
 .event-source-links a:hover {
   text-decoration: underline;
+}
+
+.event-source-list {
+  display: grid;
+  gap: 7px;
+}
+
+.event-source-item {
+  display: grid;
+  align-items: center;
+  gap: 4px 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 82%, var(--green) 2%);
+}
+
+.event-source-name {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 620;
+  overflow-wrap: anywhere;
+}
+
+.source-language {
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  grid-column: 1;
+}
+
+.event-source-item a {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.translation-unavailable {
+  display: block;
+  margin-top: -4px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .forecast-event-list {

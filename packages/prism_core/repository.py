@@ -716,6 +716,7 @@ class PrismRepository:
         start_date: str | None = None,
         end_date: str | None = None,
         statuses: list[str] | None = None,
+        prompt_version: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -740,6 +741,9 @@ class PrismRepository:
             placeholders = ", ".join("?" for _ in statuses)
             clauses.append(f"status IN ({placeholders})")
             parameters.extend(statuses)
+        if prompt_version:
+            clauses.append("prompt_version = ?")
+            parameters.append(prompt_version)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         parameters.append(limit)
         rows = self.connection.execute(

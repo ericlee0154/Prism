@@ -59,6 +59,8 @@
 - [x] Track source-grounded world events in DuckDB without placeholder content.
 - [x] Run AI research through a local ChatGPT-authenticated Codex CLI without
   exposing the Massive credential.
+- [x] Store English and Traditional Chinese event research together, with
+  per-source language labels and original-page links.
 - [x] Track scheduled earnings and major company announcements inside forecast
   horizons.
 - [x] Append sourced post-event outcomes without rewriting historical
