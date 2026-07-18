@@ -14,6 +14,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DATABASE_PATH", tmp_path / "prism-test.duckdb")
     monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("PRISM_AI_PROVIDER", "disabled")
     with TestClient(main.app) as test_client:
         yield test_client
 

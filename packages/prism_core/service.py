@@ -12,11 +12,13 @@ from .ai_events import (
     OpenAIQuotaExceeded,
 )
 from .backtest import BACKTEST_VERSION, walk_forward_backtest
+from .codex_cli_events import CodexCliEventResearchProvider
 from .event_reaction import REACTION_VERSION, compute_event_reaction
 from .forecast import historical_analog_forecast
 from .metrics import CATALOG, METRIC_VERSION, compute_price_metrics
 from .providers.massive import MassiveMarketDataProvider, MassiveQuotaExceeded
 from .repository import PrismRepository
+
 
 def _percentile(values: list[float], value: float) -> float:
     if len(values) <= 1:
@@ -43,12 +45,27 @@ class PrismService:
         self.repository = repository
         api_key = os.getenv("MASSIVE_API_KEY", "").strip()
         self.provider = MassiveMarketDataProvider(api_key=api_key) if api_key else None
-        openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        self.ai_provider = (
-            OpenAIEventResearchProvider(api_key=openai_api_key)
-            if openai_api_key
-            else None
+        self.ai_provider_mode = (
+            os.getenv("PRISM_AI_PROVIDER", "codex_cli").strip().lower()
         )
+        self.ai_configuration_error: str | None = None
+        if self.ai_provider_mode == "codex_cli":
+            self.ai_provider = CodexCliEventResearchProvider()
+            self.ai_configuration_error = self.ai_provider.configuration_error
+        elif self.ai_provider_mode == "openai":
+            self.ai_provider = OpenAIEventResearchProvider(
+                api_key=os.getenv("OPENAI_API_KEY", "").strip()
+            )
+            if not self.ai_provider.configured:
+                self.ai_configuration_error = "OPENAI_API_KEY is not configured"
+        elif self.ai_provider_mode in {"disabled", "none", "off"}:
+            self.ai_provider = None
+            self.ai_configuration_error = "AI research is disabled"
+        else:
+            self.ai_provider = None
+            self.ai_configuration_error = (
+                f"Unknown PRISM_AI_PROVIDER: {self.ai_provider_mode}"
+            )
 
     @property
     def provider_name(self) -> str | None:
@@ -60,11 +77,22 @@ class PrismService:
 
     @property
     def ai_configured(self) -> bool:
-        return self.ai_provider is not None
+        return bool(self.ai_provider and self.ai_provider.configured)
 
     @property
     def ai_model(self) -> str | None:
         return self.ai_provider.model if self.ai_provider else None
+
+    @property
+    def ai_provider_name(self) -> str | None:
+        return self.ai_provider.name if self.ai_provider else None
+
+    def _require_ai_provider(self) -> None:
+        if not self.ai_configured:
+            raise RuntimeError(
+                self.ai_configuration_error
+                or "AI research provider is not configured"
+            )
 
     def sync_market_data(
         self,
@@ -277,8 +305,9 @@ class PrismService:
             for event in events
         )
         return {
-            "provider": "openai" if self.ai_provider else None,
+            "provider": self.ai_provider_name,
             "provider_configured": self.ai_configured,
+            "configuration_error": self.ai_configuration_error,
             "model": self.ai_model,
             "prompt_version": PROMPT_VERSION,
             "due_event_count": due_count,
@@ -293,8 +322,9 @@ class PrismService:
         limit: int = 500,
     ) -> dict:
         return {
-            "provider": "openai" if self.ai_provider else None,
+            "provider": self.ai_provider_name,
             "provider_configured": self.ai_configured,
+            "configuration_error": self.ai_configuration_error,
             "model": self.ai_model,
             "prompt_version": PROMPT_VERSION,
             "snapshots": self.repository.list_confidence_snapshots(
@@ -304,8 +334,8 @@ class PrismService:
         }
 
     def refresh_confidence(self, *, symbol: str) -> dict:
-        if not self.ai_provider:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+        self._require_ai_provider()
+        assert self.ai_provider is not None
         ticker = symbol.strip().upper()
         if ticker not in self.repository.list_symbols():
             raise ValueError(f"No stored market data for {ticker}")
@@ -371,7 +401,7 @@ class PrismService:
                         "stance_scale": [-2, -1, 0, 1, 2],
                     },
                     data_cutoff=None,
-                    provider="openai",
+                    provider=self.ai_provider.name,
                     model=research.model,
                     run_id=run_id,
                 )
@@ -444,7 +474,7 @@ class PrismService:
                     "market_detail": market_component,
                 },
                 data_cutoff=market_component.get("data_cutoff"),
-                provider="prism+openai",
+                provider=f"prism+{self.ai_provider.name}",
                 model=research.model,
                 run_id=run_id,
             )
@@ -483,8 +513,8 @@ class PrismService:
         lookback_days: int = 7,
         lookahead_days: int = 30,
     ) -> dict:
-        if not self.ai_provider:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+        self._require_ai_provider()
+        assert self.ai_provider is not None
         if lookback_days < 1 or lookback_days > 90:
             raise ValueError("lookback_days must be between 1 and 90")
         if lookahead_days < 1 or lookahead_days > 180:
@@ -554,8 +584,8 @@ class PrismService:
         start_date: date,
         end_date: date,
     ) -> dict:
-        if not self.ai_provider:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+        self._require_ai_provider()
+        assert self.ai_provider is not None
         ticker = symbol.strip().upper()
         if ticker not in self.repository.list_symbols():
             raise ValueError(f"No stored market data for {ticker}")
@@ -622,8 +652,8 @@ class PrismService:
         }
 
     def resolve_event(self, event_id: str) -> dict:
-        if not self.ai_provider:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+        self._require_ai_provider()
+        assert self.ai_provider is not None
         event = self.repository.get_research_event(event_id)
         if not event:
             raise ValueError("Unknown event")
@@ -698,8 +728,7 @@ class PrismService:
         }
 
     def resolve_due_events(self, *, limit: int = 5) -> dict:
-        if not self.ai_provider:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+        self._require_ai_provider()
         if limit < 1 or limit > 20:
             raise ValueError("limit must be between 1 and 20")
         today = date.today()
@@ -810,7 +839,7 @@ class PrismService:
             "actual": {},
             "reaction": {},
             "sources": _sources_for_urls(item["source_urls"], sources),
-            "provider": "openai",
+            "provider": self.ai_provider.name,
             "model": model,
             "prompt_version": PROMPT_VERSION,
         }
@@ -857,7 +886,7 @@ class PrismService:
             "actual": {},
             "reaction": {},
             "sources": _sources_for_urls(item["source_urls"], sources),
-            "provider": "openai",
+            "provider": self.ai_provider.name,
             "model": model,
             "prompt_version": PROMPT_VERSION,
         }

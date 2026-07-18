@@ -36,8 +36,8 @@ class MassiveMarketDataProvider(MarketDataProvider):
     ) -> list[Bar]:
         if not self.api_key:
             raise RuntimeError(
-                "MASSIVE_API_KEY is not configured. Use demo mode or add the key "
-                "to the local environment."
+                "MASSIVE_API_KEY is not configured. Add it to the local server "
+                "environment; Prism will not substitute fallback market data."
             )
 
         ticker = symbol.strip().upper()

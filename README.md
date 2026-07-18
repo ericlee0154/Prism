@@ -30,23 +30,23 @@ React / Vinext UI (local browser)
                          +-- FastAPI on 127.0.0.1:8000
                          |
                          +-- Massive adjusted daily bars
-                         +-- OpenAI source-grounded event research
+                         +-- local Codex CLI source-grounded research
                          +-- point-in-time metrics
                          +-- walk-forward backtests
                          +-- event and confidence snapshots
                          +-- local DuckDB
 ```
 
-The Massive and OpenAI keys are read only by FastAPI from the local process
-environment. They are never sent to the browser and must not use a
-`NEXT_PUBLIC_*` name.
+The Massive key is read only by FastAPI from the local process environment.
+It is never sent to the browser and must not use a `NEXT_PUBLIC_*` name.
+AI research uses the locally installed Codex CLI and its cached ChatGPT login.
 
 ## Requirements
 
 - Node.js 22.13 or newer
 - Python 3.12 or newer
 - A Massive API key
-- An OpenAI API key only if you want event and confidence research
+- Codex CLI signed in with ChatGPT for event and confidence research
 
 ## Setup
 
@@ -59,10 +59,19 @@ Set the key in the ignored `.env`:
 
 ```dotenv
 MASSIVE_API_KEY=your-key
-OPENAI_API_KEY=your-key
-OPENAI_EVENT_MODEL=gpt-5.6-sol
+PRISM_AI_PROVIDER=codex_cli
+PRISM_CODEX_TIMEOUT_SECONDS=300
 PRISM_DATABASE_PATH=./data/prism.duckdb
 ```
+
+Check the local AI login once:
+
+```bash
+codex login status
+```
+
+If needed, run `codex login`. No OpenAI Platform API key is required for the
+default AI provider.
 
 Then start both local processes:
 
@@ -99,12 +108,14 @@ analogs exist, no forecast values are produced.
 
 ## Event and confidence research
 
-The **World & company events** screen makes explicit, user-triggered OpenAI
-Responses API requests with web search. Prism retains only events with URLs
-actually retrieved during that request and stores the provider, model, prompt
-version, run status, token usage, and source list. It never substitutes
-generated events when the key, network, evidence, or quota is unavailable. An
-OpenAI HTTP 429 stops the operation immediately without retry.
+The **World & company events** screen makes explicit, user-triggered local
+`codex exec --search` requests. Codex runs non-interactively in an isolated,
+read-only temporary directory and receives no Massive credential. Prism
+requires schema-valid JSON, records the CLI search activity, retains sourced
+events, and stores the provider, model, prompt version, run status, usage, and
+source list. It never substitutes generated events when login, network,
+evidence, or ChatGPT/Codex usage is unavailable. Usage-limit failures stop the
+operation immediately without retry.
 
 Company events can be researched directly from a forecast window. Scheduled
 earnings and major announcements are attached to every applicable 10-, 30-, or

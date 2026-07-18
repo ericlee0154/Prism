@@ -95,6 +95,7 @@ type ResearchEvent = {
 type EventCenter = {
   provider: string | null;
   provider_configured: boolean;
+  configuration_error: string | null;
   model: string | null;
   prompt_version: string;
   due_event_count: number;
@@ -140,6 +141,7 @@ type ConfidenceSnapshot = {
 type ConfidenceCenter = {
   provider: string | null;
   provider_configured: boolean;
+  configuration_error: string | null;
   model: string | null;
   prompt_version: string;
   snapshots: ConfidenceSnapshot[];
@@ -312,17 +314,17 @@ const translations = {
   eventResearch: { zh: "AI 來源化事件研究", en: "AI source-grounded event research" },
   eventResearchTitle: { zh: "把預告、結果與市場反應連成資料。", en: "Connect previews, outcomes, and market reactions." },
   eventResearchCopy: {
-    zh: "OpenAI 只負責查找與彙整有來源的世界時事、財報及重大發表；價格反應由本機 Massive 日線計算並存入 DuckDB。",
-    en: "OpenAI finds and summarizes sourced world events, earnings, and major announcements; Prism computes price reactions from local Massive bars and stores the record in DuckDB.",
+    zh: "本機 Codex CLI 只負責查找與彙整有來源的世界時事、財報及重大發表；價格反應由 Massive 日線計算並存入本機 DuckDB。",
+    en: "The local Codex CLI finds and summarizes sourced world events, earnings, and major announcements; Prism computes price reactions from Massive bars and stores them in local DuckDB.",
   },
   refreshWorld: { zh: "更新世界事件", en: "Refresh world events" },
   resolveDue: { zh: "補齊到期事件", en: "Resolve due events" },
   refreshReactions: { zh: "重算市場反應", en: "Recompute reactions" },
   refreshingEvents: { zh: "研究中…", en: "Researching…" },
-  aiKeyMissing: { zh: "尚未設定 OpenAI API key", en: "OpenAI API key is not configured" },
+  aiKeyMissing: { zh: "Codex CLI 尚未連線", en: "Codex CLI is not connected" },
   aiKeyMissingCopy: {
-    zh: "請把 OPENAI_API_KEY 加到本機 .env，然後重啟 API。Prism 不會顯示 AI 生成的預設事件。",
-    en: "Add OPENAI_API_KEY to the local .env and restart the API. Prism will not show generated placeholder events.",
+    zh: "請先在本機終端執行 codex login，完成 ChatGPT 登入後重啟 Prism API。Massive API 不受影響，Prism 也不會顯示 AI 預設事件。",
+    en: "Run codex login locally, sign in with ChatGPT, then restart the Prism API. Massive remains unaffected and Prism will not show placeholder AI events.",
   },
   noStoredEvents: { zh: "尚無已研究事件", en: "No researched events are stored" },
   noStoredEventsCopy: {
@@ -669,7 +671,7 @@ function EventsView({ center, confidence, stocks, reload }: { center: EventCente
   const company = center?.events.filter((event) => event.scope === "company") ?? [];
   return <div className="page-section"><Header eyebrow={t("eventResearch")} title={t("eventResearchTitle")} copy={t("eventResearchCopy")}><button className="secondary-button" disabled={Boolean(busy) || !center?.provider_configured} onClick={() => void act("world", "/events/world/refresh")}>{busy === "world" ? t("refreshingEvents") : t("refreshWorld")}</button><button className="secondary-button" disabled={Boolean(busy) || !center?.provider_configured || !center.due_event_count} onClick={() => void act("due", "/events/due/resolve", { limit: 5 })}>{t("resolveDue")} ({center?.due_event_count ?? 0})</button><button className="secondary-button" disabled={Boolean(busy)} onClick={() => void act("reaction", "/events/reactions/refresh")}>{t("refreshReactions")}</button></Header>
     {error && <div className="workspace-notice error">{error}</div>}
-    {!center?.provider_configured && <div className="panel empty-market"><span className="tiny-badge">{t("emptyByDesign")}</span><h2>{t("aiKeyMissing")}</h2><p>{t("aiKeyMissingCopy")}</p></div>}
+    {!center?.provider_configured && <div className="panel empty-market"><span className="tiny-badge">{t("emptyByDesign")}</span><h2>{t("aiKeyMissing")}</h2><p>{t("aiKeyMissingCopy")}</p>{center?.configuration_error && <small className="mono negative-text">{center.configuration_error}</small>}</div>}
     {center?.provider_configured && !center.events.length && <div className="panel empty-market"><h2>{t("noStoredEvents")}</h2><p>{t("noStoredEventsCopy")}</p></div>}
     {world.length > 0 && <section><div className="section-heading"><h2>{t("worldEvents")}</h2><span>{world.length}</span></div><div className="event-grid">{world.map((event) => <EventCard key={event.event_id} event={event} busy={Boolean(busy)} onResolve={(eventId) => act(`event-${eventId}`, `/events/${eventId}/resolve`)} />)}</div></section>}
     {company.length > 0 && <section><div className="section-heading"><h2>{t("companyEvents")}</h2><span>{company.length}</span></div><div className="event-grid">{company.map((event) => <EventCard key={event.event_id} event={event} busy={Boolean(busy)} onResolve={(eventId) => act(`event-${eventId}`, `/events/${eventId}/resolve`)} />)}</div></section>}

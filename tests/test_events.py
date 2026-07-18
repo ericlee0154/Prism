@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -15,9 +16,18 @@ from packages.prism_core.ai_events import (
     OpenAIQuotaExceeded,
     WorldEventFeed,
 )
+from packages.prism_core.codex_cli_events import (
+    CodexCliEventResearchProvider,
+    CodexCommandResult,
+)
 from packages.prism_core.models import Bar
 from packages.prism_core.repository import PrismRepository
 from packages.prism_core.service import PrismService
+
+
+@pytest.fixture(autouse=True)
+def disable_automatic_ai_provider(monkeypatch) -> None:
+    monkeypatch.setenv("PRISM_AI_PROVIDER", "disabled")
 
 
 def test_openai_event_provider_keeps_only_retrieved_sources() -> None:
@@ -121,6 +131,139 @@ def test_openai_event_provider_does_not_retry_quota() -> None:
     assert request_count == 1
 
 
+def test_codex_cli_provider_returns_schema_bound_grounded_output(
+    monkeypatch,
+) -> None:
+    source_url = "https://example.com/official-event"
+    captured: dict[str, object] = {}
+    payload = {
+        "as_of": "2026-07-18",
+        "events": [
+            {
+                "title": "Policy decision",
+                "summary": "A confirmed policy decision is scheduled.",
+                "why_markets_care": "The decision can affect rates.",
+                "event_type": "central_bank",
+                "status": "scheduled",
+                "event_date_start": "2026-07-30",
+                "event_date_end": "2026-07-30",
+                "regions": ["US"],
+                "affected_assets": ["equities"],
+                "watch_items": ["policy rate"],
+                "importance": 5,
+                "confidence": 0.9,
+                "source_urls": [
+                    source_url,
+                    "https://invented.example/not-retrieved",
+                ],
+            }
+        ],
+    }
+
+    def executor(command, prompt, timeout, environment):
+        captured["command"] = command
+        captured["prompt"] = prompt
+        captured["timeout"] = timeout
+        captured["environment"] = environment
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(json.dumps(payload), encoding="utf-8")
+        return CodexCommandResult(
+            returncode=0,
+            stdout="\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "thread.started",
+                            "thread_id": "thread_test",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "type": "web_search",
+                                "sources": [
+                                    {
+                                        "url": source_url,
+                                        "title": "Official event",
+                                    }
+                                ],
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "turn.completed",
+                            "usage": {"total_tokens": 123},
+                        }
+                    ),
+                ]
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setenv("MASSIVE_API_KEY", "must-not-reach-codex")
+    provider = CodexCliEventResearchProvider(
+        binary="/mock/codex",
+        executor=executor,
+        authenticated=True,
+        timeout_seconds=60,
+    )
+    result = provider.world_events(
+        as_of=date(2026, 7, 18),
+        lookback_days=7,
+        lookahead_days=30,
+    )
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert "--search" in command
+    assert "read-only" in command
+    assert "--ephemeral" in command
+    assert "--output-schema" in command
+    assert captured["environment"].get("MASSIVE_API_KEY") is None
+    assert result.response_id == "thread_test"
+    assert result.usage == {"total_tokens": 123}
+    assert result.payload.events[0].source_urls == [source_url]
+
+
+def test_codex_cli_provider_stops_on_chatgpt_usage_limit() -> None:
+    calls = 0
+
+    def executor(command, prompt, timeout, environment):
+        nonlocal calls
+        calls += 1
+        return CodexCommandResult(
+            returncode=1,
+            stdout="",
+            stderr="Usage limit reached",
+        )
+
+    provider = CodexCliEventResearchProvider(
+        binary="/mock/codex",
+        executor=executor,
+        authenticated=True,
+    )
+    with pytest.raises(OpenAIQuotaExceeded, match="usage limit"):
+        provider.world_events(
+            as_of=date(2026, 7, 18),
+            lookback_days=7,
+            lookahead_days=30,
+        )
+    assert calls == 1
+
+
+def test_codex_cli_provider_uses_safe_default_for_invalid_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PRISM_CODEX_TIMEOUT_SECONDS", "not-a-number")
+    provider = CodexCliEventResearchProvider(
+        binary="/mock/codex",
+        authenticated=True,
+    )
+    assert provider.timeout_seconds == 300
+
+
 def test_company_event_lifecycle_connects_forecast_and_market_reaction(
     tmp_path,
 ) -> None:
@@ -165,6 +308,7 @@ def test_company_event_lifecycle_connects_forecast_and_market_reaction(
     class FakeAIProvider:
         name = "openai"
         model = "test-model"
+        configured = True
 
         def company_events(self, **kwargs):
             return AIResearchResult(
@@ -277,6 +421,7 @@ def test_weekly_institution_and_monthly_long_term_confidence_are_versioned(
     class FakeConfidenceProvider:
         name = "openai"
         model = "test-model"
+        configured = True
 
         def confidence_evidence(self, **kwargs):
             return AIResearchResult(

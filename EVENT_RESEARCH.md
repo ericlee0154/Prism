@@ -2,14 +2,20 @@
 
 ## Boundary
 
-OpenAI performs source discovery, structured extraction, and narrative
-summarization. It never supplies prices or market reactions. Prism computes
-those values from locally stored Massive bars. Every AI record is discarded
-unless at least one URL in the structured result was also returned by that
-request's web-search tool.
+The local ChatGPT-authenticated Codex CLI performs source discovery, structured
+extraction, and narrative summarization. It never supplies prices or market
+reactions. Prism computes those values from locally stored Massive bars. Codex
+runs with `--search`, `--ephemeral`, a read-only sandbox, no interactive
+approvals, and a Pydantic-generated JSON Schema.
 
-No `OPENAI_API_KEY` means no AI event or confidence data. There are no default
-events, institutions, scores, or brand signals.
+The CLI runs in an isolated temporary directory. FastAPI passes only the
+research prompt and output schema; the child environment excludes
+`MASSIVE_API_KEY` and other application secrets. Codex writes a staging result,
+then FastAPI validates and writes DuckDB. Codex never writes the database
+directly.
+
+No working Codex CLI ChatGPT login means no AI event or confidence data. There
+are no default events, institutions, scores, or brand signals.
 
 ## Event lifecycle
 

@@ -14,9 +14,9 @@ Prism 不會下單，也沒有建立、修改或取消券商訂單的功能。
 - 空資料庫就顯示空畫面。
 - API 或網路失敗時不會補入範例價格、分數、預測或回測。
 - Massive 回傳 HTTP 429 時立即停止該批同步，不重試，也不再請求剩餘股票。
-- OpenAI 回傳 HTTP 429 時也立即停止研究，不重試。
+- Codex／ChatGPT 額度用完時也立即停止研究，不重試。
 - 已儲存的真實資料可離線查閱，但會顯示觀察日與可用時間。
-- Massive 與 OpenAI key 只存在本機 FastAPI 程序，不會傳到瀏覽器。
+- Massive key 只存在本機 FastAPI 程序，不會傳到瀏覽器或 Codex 子程序。
 
 ## 安裝與啟動
 
@@ -29,14 +29,20 @@ cp .env.example .env
 
 ```dotenv
 MASSIVE_API_KEY=你的金鑰
-OPENAI_API_KEY=你的金鑰
-OPENAI_EVENT_MODEL=gpt-5.6-sol
+PRISM_AI_PROVIDER=codex_cli
+PRISM_CODEX_TIMEOUT_SECONDS=300
 PRISM_DATABASE_PATH=./data/prism.duckdb
 ```
 
-若不設定 `OPENAI_API_KEY`，世界事件、公司事件與信心研究會保持空白；
-不影響市場日線、metrics 與回測。請使用 `.env`，不要使用
-`NEXT_PUBLIC_*`，也不需要把 key 寫入 `.zshrc`。
+AI 研究不需要 OpenAI Platform API key。先在本機終端確認：
+
+```bash
+codex login status
+```
+
+若尚未登入就執行 `codex login`。Codex CLI 未安裝、未登入或額度用完時，
+世界事件、公司事件與信心研究會保持空白；不影響 Massive 市場日線、
+metrics 與回測。
 
 啟動本機 API 與 Web：
 
@@ -76,9 +82,10 @@ Web 介面透過同源本機 API route 連到 `127.0.0.1:8000`；Massive key
 
 ## 世界事件、公司事件與信心追蹤
 
-「世界與公司事件」只在你按下更新時呼叫 OpenAI Responses API 的 web
-search。Prism 只保留該次實際搜尋到 URL 的事件，並保存來源、模型、prompt
-版本、run 狀態與用量。缺 key、缺來源、網路失敗或 quota 用完時都不會補入
+「世界與公司事件」只在你按下更新時呼叫本機 `codex exec --search`。
+Codex 在隔離的唯讀暫存目錄非互動執行，不會收到 Massive key。Prism
+驗證 JSON Schema、搜尋紀錄與來源 URL，並保存來源、模型、prompt 版本、
+run 狀態與用量。缺登入、缺來源、網路失敗或 quota 用完時都不會補入
 預設事件。
 
 在「區間 Metrics」完成計算後，可以針對 90 個交易日 forecast 視窗研究
