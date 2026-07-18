@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 type Language = "zh" | "en";
 type View = "overview" | "scanner" | "metrics" | "events" | "backtest" | "data";
@@ -44,11 +44,30 @@ type Forecast = {
   version: string;
   horizon_sessions: number;
   sample_count: number;
+  origin_date?: string;
+  origin_price?: number | null;
   median_return?: number | null;
   p10_return?: number | null;
+  p50_return?: number | null;
   p90_return?: number | null;
+  p10_price?: number | null;
+  p50_price?: number | null;
+  p90_price?: number | null;
   positive_probability?: number | null;
   analog_dates?: string[];
+  actual_status?: "complete" | "pending";
+  actual_target?: {
+    date: string;
+    close: number;
+    return: number | null;
+  } | null;
+  actual_window?: {
+    session_offset: number;
+    date: string;
+    close: number;
+  }[];
+  actual_window_complete?: boolean;
+  actual_data_cutoff?: string | null;
 };
 type EventSource = { title: string; url: string; language?: string };
 type EventTranslationZh = {
@@ -219,6 +238,13 @@ type Backtest = {
   mean_spearman_ic: number | null;
   mean_top_bottom_spread: number | null;
   direction_accuracy: number | null;
+  volatility_surface?: {
+    dates: string[];
+    symbols: string[];
+    values: (number | null)[][];
+    unit: "annualized_decimal";
+    lookback_sessions: number;
+  };
   warnings: string[];
   result?: Omit<Backtest, "backtest_id" | "created_at" | "result">;
 };
@@ -334,8 +360,12 @@ const translations = {
   selectStock: { zh: "選擇股票", en: "Select symbol" },
   startDate: { zh: "開始日期", en: "Start date" },
   endDate: { zh: "結束日期", en: "End date" },
-  calculate: { zh: "計算 Metrics 與 Forecast", en: "Calculate metrics & forecast" },
   calculating: { zh: "計算中…", en: "Calculating…" },
+  autoCalculate: { zh: "選項變更後自動重算", en: "Recalculates automatically after changes" },
+  shiftRange: { zh: "平移整段時間", en: "Shift the whole range" },
+  shiftDays: { zh: "天", en: "days" },
+  moveEarlier: { zh: "往左移", en: "Move earlier" },
+  moveLater: { zh: "往右移", en: "Move later" },
   requestedRange: { zh: "請求區間", en: "Requested range" },
   actualCoverage: { zh: "實際資料覆蓋", en: "Actual coverage" },
   sessions: { zh: "個交易日", en: "sessions" },
@@ -347,12 +377,26 @@ const translations = {
   forecast: { zh: "未來歷史類比 Forecast", en: "Historical-analog forecast" },
   medianReturn: { zh: "中位數報酬", en: "Median return" },
   range1090: { zh: "10–90% 區間", en: "10–90% range" },
+  forecastPrices: { zh: "Forecast 價格點位", en: "Forecast price levels" },
+  p10Price: { zh: "10% 下緣", en: "10% lower" },
+  p50Price: { zh: "50% 中位", en: "50% median" },
+  p90Price: { zh: "90% 上緣", en: "90% upper" },
+  historicalActual: { zh: "歷史真值", en: "Historical actual" },
+  actualWindow: { zh: "目標日前後 5 個交易日", en: "Five sessions before and after target" },
+  actualPending: {
+    zh: "所選區間後尚無足夠的已儲存真值；保持空白。",
+    en: "No stored realized value exists after this range yet; it remains empty.",
+  },
+  partialActualWindow: {
+    zh: "已有目標日真值，但前後 5 個交易日尚未完整。",
+    en: "The target actual is available, but the ±5-session window is incomplete.",
+  },
   positiveProbability: { zh: "正報酬比例", en: "Positive-return share" },
   analogSamples: { zh: "類似樣本", en: "analog samples" },
   insufficient: { zh: "樣本不足，不產生 forecast", en: "Insufficient samples; no forecast produced" },
   forecastDisclaimer: {
-    zh: "Forecast 是所選歷史區間內相似 metric 狀態的結果分布，不是即時報價、保證或交易建議。",
-    en: "Forecasts are outcome distributions for similar metric states inside the selected history, not live quotes, guarantees, or trade advice.",
+    zh: "Metrics 與類比只使用選定區間；只有下方歷史真值驗證會讀取區間後已儲存的日線。不是即時報價、保證或交易建議。",
+    en: "Metrics and analogs use only the selected range. Only the realized-history check below reads stored bars after it. This is not a live quote, guarantee, or trading advice.",
   },
   eventResearch: { zh: "AI 來源化事件研究", en: "AI source-grounded event research" },
   eventResearchTitle: { zh: "把預告、結果與市場反應連成資料。", en: "Connect previews, outcomes, and market reactions." },
@@ -448,6 +492,12 @@ const translations = {
   spread: { zh: "Top-bottom spread", en: "Top-bottom spread" },
   directionAccuracy: { zh: "方向準確率", en: "Direction accuracy" },
   observations: { zh: "觀察值", en: "Observations" },
+  volatilitySurface: { zh: "3D 波動曲面", en: "3D volatility surface" },
+  volatilitySurfaceCopy: {
+    zh: "每個 walk-forward 評估點的 20 日年化已實現波動；X 軸是時間、Y 軸是股票、Z 軸是波動率。",
+    en: "Annualized 20-session realized volatility at each walk-forward evaluation point; X is time, Y is symbol, and Z is volatility.",
+  },
+  noVolatilitySurface: { zh: "沒有足夠資料繪製波動曲面。", en: "Insufficient data for a volatility surface." },
   methodLimits: { zh: "方法限制", en: "Method limits" },
   localOnly: { zh: "Massive → DuckDB・僅限本機", en: "Massive → DuckDB · local only" },
   syncRealHistory: { zh: "同步真實歷史資料。", en: "Synchronize real history." },
@@ -750,6 +800,214 @@ function StockDetail({ stock, horizon }: { stock: Stock; horizon: Horizon }) {
   </div>;
 }
 
+function ForecastBandChart({ forecast }: { forecast: Forecast }) {
+  const { t } = useI18n();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const p10 = forecast.p10_price;
+  const p50 = forecast.p50_price;
+  const p90 = forecast.p90_price;
+  const actuals = useMemo(
+    () => forecast.actual_window ?? [],
+    [forecast.actual_window],
+  );
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || p10 == null || p50 == null || p90 == null) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const width = canvas.width;
+    const height = canvas.height;
+    const plot = { left: 34, right: width - 58, top: 20, bottom: height - 28 };
+    const values = [p10, p50, p90, ...actuals.map((item) => item.close)];
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    const padding = Math.max((maximum - minimum) * 0.12, maximum * 0.01, 0.5);
+    const low = minimum - padding;
+    const high = maximum + padding;
+    const y = (value: number) => plot.bottom - ((value - low) / (high - low)) * (plot.bottom - plot.top);
+
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = "#fbfcf8";
+    context.fillRect(0, 0, width, height);
+    context.fillStyle = "rgba(181, 228, 67, 0.16)";
+    context.fillRect(plot.left, y(p90), plot.right - plot.left, y(p10) - y(p90));
+
+    const drawLevel = (value: number, label: string, dashed: boolean, color: string) => {
+      context.beginPath();
+      context.setLineDash(dashed ? [6, 5] : []);
+      context.strokeStyle = color;
+      context.lineWidth = dashed ? 1.5 : 2.5;
+      context.moveTo(plot.left, y(value));
+      context.lineTo(plot.right, y(value));
+      context.stroke();
+      context.setLineDash([]);
+      context.fillStyle = color;
+      context.font = "600 10px ui-monospace, SFMono-Regular, Menlo, monospace";
+      context.fillText(`${label} $${value.toFixed(2)}`, plot.right + 5, y(value) + 3);
+    };
+    drawLevel(p10, "10%", true, "#688346");
+    drawLevel(p90, "90%", true, "#688346");
+    drawLevel(p50, "50%", false, "#152d22");
+
+    if (actuals.length) {
+      const x = (index: number) => (
+        actuals.length === 1
+          ? (plot.left + plot.right) / 2
+          : plot.left + index / (actuals.length - 1) * (plot.right - plot.left)
+      );
+      context.beginPath();
+      actuals.forEach((item, index) => {
+        if (index === 0) context.moveTo(x(index), y(item.close));
+        else context.lineTo(x(index), y(item.close));
+      });
+      context.strokeStyle = "#df6846";
+      context.lineWidth = 2;
+      context.stroke();
+      actuals.forEach((item, index) => {
+        context.beginPath();
+        context.fillStyle = item.session_offset === 0 ? "#152d22" : "#df6846";
+        context.arc(x(index), y(item.close), item.session_offset === 0 ? 4 : 2.5, 0, Math.PI * 2);
+        context.fill();
+      });
+      context.fillStyle = "#6b756d";
+      context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+      context.fillText(`${actuals[0].session_offset}`, plot.left, height - 9);
+      context.fillText("0", (plot.left + plot.right) / 2 - 3, height - 9);
+      context.fillText(`+${actuals[actuals.length - 1].session_offset}`, plot.right - 12, height - 9);
+    }
+  }, [actuals, p10, p50, p90]);
+
+  if (p10 == null || p50 == null || p90 == null) return null;
+  return <div className="forecast-band">
+    <canvas
+      ref={canvasRef}
+      width={420}
+      height={210}
+      aria-label={`${t("forecastPrices")}: 10% $${p10.toFixed(2)}, 50% $${p50.toFixed(2)}, 90% $${p90.toFixed(2)}`}
+      role="img"
+    />
+    <div className="forecast-chart-legend"><span className="forecast-legend actual" />{t("historicalActual")}<span className="forecast-legend median" />50%<span className="forecast-legend interval" />10–90%</div>
+    {forecast.actual_status === "complete" && forecast.actual_target ? <>
+      <div className="actual-target"><span>{t("historicalActual")}</span><strong className="mono">{forecast.actual_target.date} · ${forecast.actual_target.close.toFixed(2)} · {formatPercent(forecast.actual_target.return)}</strong></div>
+      {!forecast.actual_window_complete && <small className="coverage-warning compact">{t("partialActualWindow")}</small>}
+      <div className="actual-window-title">{t("actualWindow")}</div>
+      <div className="actual-window" role="table" aria-label={t("actualWindow")}>
+        {actuals.map((item) => <div className={item.session_offset === 0 ? "actual-row target" : "actual-row"} role="row" key={`${item.date}-${item.session_offset}`}>
+          <span className="mono" role="cell">{item.session_offset > 0 ? `+${item.session_offset}` : item.session_offset}</span>
+          <span className="mono" role="cell">{item.date}</span>
+          <strong className="mono" role="cell">${item.close.toFixed(2)}</strong>
+        </div>)}
+      </div>
+    </> : <div className="empty-state compact">{t("actualPending")}</div>}
+  </div>;
+}
+
+function VolatilitySurfaceChart({ surface }: { surface: NonNullable<Backtest["volatility_surface"]> }) {
+  const { language, t } = useI18n();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const finiteValues = surface.values.flat().filter((value): value is number => value != null && Number.isFinite(value));
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !finiteValues.length || !surface.dates.length || !surface.symbols.length) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const width = canvas.width;
+    const height = canvas.height;
+    const low = Math.min(...finiteValues);
+    const high = Math.max(...finiteValues);
+    const dateCount = surface.dates.length;
+    const symbolCount = surface.symbols.length;
+    const project = (dateIndex: number, symbolIndex: number, value: number) => {
+      const xRatio = dateCount <= 1 ? 0.5 : dateIndex / (dateCount - 1);
+      const yRatio = symbolCount <= 1 ? 0.5 : symbolIndex / (symbolCount - 1);
+      const zRatio = high === low ? 0.5 : (value - low) / (high - low);
+      return {
+        x: 82 + xRatio * 650 + yRatio * 105,
+        y: 350 - yRatio * 92 - zRatio * 220,
+        zRatio,
+      };
+    };
+
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = "#fbfcf8";
+    context.fillRect(0, 0, width, height);
+
+    for (let symbolIndex = symbolCount - 2; symbolIndex >= 0; symbolIndex -= 1) {
+      for (let dateIndex = 0; dateIndex < dateCount - 1; dateIndex += 1) {
+        const corners = [
+          surface.values[symbolIndex]?.[dateIndex],
+          surface.values[symbolIndex]?.[dateIndex + 1],
+          surface.values[symbolIndex + 1]?.[dateIndex + 1],
+          surface.values[symbolIndex + 1]?.[dateIndex],
+        ];
+        if (corners.some((value) => value == null)) continue;
+        const points = [
+          project(dateIndex, symbolIndex, corners[0] as number),
+          project(dateIndex + 1, symbolIndex, corners[1] as number),
+          project(dateIndex + 1, symbolIndex + 1, corners[2] as number),
+          project(dateIndex, symbolIndex + 1, corners[3] as number),
+        ];
+        const average = points.reduce((sum, point) => sum + point.zRatio, 0) / points.length;
+        const red = Math.round(63 + average * 170);
+        const green = Math.round(145 - average * 55);
+        context.beginPath();
+        context.moveTo(points[0].x, points[0].y);
+        points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+        context.closePath();
+        context.fillStyle = `rgba(${red}, ${green}, 69, 0.48)`;
+        context.fill();
+        context.strokeStyle = "rgba(21, 45, 34, 0.18)";
+        context.lineWidth = 0.65;
+        context.stroke();
+      }
+    }
+
+    surface.symbols.forEach((symbol, symbolIndex) => {
+      context.beginPath();
+      surface.dates.forEach((_, dateIndex) => {
+        const value = surface.values[symbolIndex]?.[dateIndex];
+        if (value == null) return;
+        const point = project(dateIndex, symbolIndex, value);
+        if (dateIndex === 0) context.moveTo(point.x, point.y);
+        else context.lineTo(point.x, point.y);
+      });
+      context.strokeStyle = "rgba(21, 45, 34, 0.56)";
+      context.lineWidth = 1.1;
+      context.stroke();
+      const lastValue = surface.values[symbolIndex]?.[dateCount - 1];
+      if (lastValue != null) {
+        const point = project(dateCount - 1, symbolIndex, lastValue);
+        context.fillStyle = "#152d22";
+        context.font = "600 10px ui-monospace, SFMono-Regular, Menlo, monospace";
+        context.fillText(symbol, point.x + 5, point.y + 3);
+      }
+    });
+
+    context.strokeStyle = "#8d9a8f";
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(82, 350);
+    context.lineTo(732, 350);
+    context.lineTo(837, 258);
+    context.stroke();
+    context.fillStyle = "#5e6b62";
+    context.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    context.fillText(surface.dates[0] ?? "", 82, 374);
+    context.fillText(surface.dates[dateCount - 1] ?? "", 670, 374);
+    context.fillText(`${(low * 100).toFixed(1)}%`, 18, 350);
+    context.fillText(`${(high * 100).toFixed(1)}%`, 18, 130);
+    context.fillText(language === "zh" ? "年化波動率" : "Annualized volatility", 18, 108);
+  }, [finiteValues, language, surface]);
+
+  if (!finiteValues.length) return <div className="empty-state">{t("noVolatilitySurface")}</div>;
+  return <div className="volatility-surface">
+    <canvas ref={canvasRef} width={920} height={400} role="img" aria-label={t("volatilitySurface")} />
+    <div className="surface-scale"><span>{(Math.min(...finiteValues) * 100).toFixed(1)}%</span><i /><span>{(Math.max(...finiteValues) * 100).toFixed(1)}%</span></div>
+  </div>;
+}
+
 function MetricsView({ stocks }: { stocks: Stock[] }) {
   const { language, t } = useI18n();
   const initialStock = stocks.find((stock) => stock.symbol === "AAPL") ?? stocks[0] ?? null;
@@ -763,6 +1021,8 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
   const [running, setRunning] = useState(false);
   const [eventRefreshing, setEventRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [shiftDays, setShiftDays] = useState(1);
+  const requestSequence = useRef(0);
 
   const chooseSymbol = (value: string) => {
     const stock = stocks.find((item) => item.symbol === value);
@@ -774,22 +1034,57 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
     setAnalysis(null);
     setError("");
   };
-  const run = async () => {
-    if (!selected) return;
+  const run = useCallback(async (signal?: AbortSignal) => {
+    const currentSymbol = selected?.symbol;
+    if (!currentSymbol) return;
+    const requestId = ++requestSequence.current;
     setRunning(true);
     setError("");
     try {
-      const result = await api<RangeAnalysis>("/analyses", { method: "POST", body: JSON.stringify({ symbol: selected.symbol, start_date: dayToDate(startDay), end_date: dayToDate(endDay) }) });
-      setAnalysis(result);
+      const result = await api<RangeAnalysis>("/analyses", {
+        method: "POST",
+        signal,
+        body: JSON.stringify({
+          symbol: currentSymbol,
+          start_date: dayToDate(startDay),
+          end_date: dayToDate(endDay),
+        }),
+      });
+      if (requestId === requestSequence.current) setAnalysis(result);
     } catch (requestError) {
-      setAnalysis(null);
-      setError(requestError instanceof Error ? requestError.message : t("apiError"));
+      if ((requestError as { name?: string })?.name === "AbortError") return;
+      if (requestId === requestSequence.current) {
+        setAnalysis(null);
+        setError(requestError instanceof Error ? requestError.message : translations.apiError[language]);
+      }
     } finally {
-      setRunning(false);
+      if (requestId === requestSequence.current) setRunning(false);
     }
+  }, [endDay, language, selected?.symbol, startDay]);
+  useEffect(() => {
+    if (!selected) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => void run(controller.signal), 320);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [run, selected]);
+  const setStartDate = (value: string) => {
+    const parsed = dateToDay(value);
+    if (Number.isFinite(parsed)) setStartDay(Math.min(parsed, endDay - 1));
   };
-  const setStartDate = (value: string) => setStartDay(Math.min(dateToDay(value), endDay - 1));
-  const setEndDate = (value: string) => setEndDay(Math.max(dateToDay(value), startDay + 1));
+  const setEndDate = (value: string) => {
+    const parsed = dateToDay(value);
+    if (Number.isFinite(parsed)) setEndDay(Math.max(parsed, startDay + 1));
+  };
+  const shiftRange = (direction: -1 | 1) => {
+    const span = endDay - startDay;
+    const requestedShift = direction * shiftDays;
+    const shiftedStart = Math.max(minDay, Math.min(maxDay - span, startDay + requestedShift));
+    setStartDay(shiftedStart);
+    setEndDay(shiftedStart + span);
+  };
   const researchForecastEvents = async () => {
     if (!selected || !analysis) return;
     setEventRefreshing(true);
@@ -823,7 +1118,12 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
       <div className="timeline-dates"><label>{t("startDate")}<input type="date" value={dayToDate(startDay)} min={dayToDate(minDay)} max={dayToDate(endDay - 1)} onChange={(event) => setStartDate(event.target.value)} /></label><label>{t("endDate")}<input type="date" value={dayToDate(endDay)} min={dayToDate(startDay + 1)} max={dayToDate(maxDay)} onChange={(event) => setEndDate(event.target.value)} /></label></div>
       <div className="dual-range" aria-label={t("rangeMetrics")}><input type="range" min={minDay} max={maxDay} value={startDay} onChange={(event) => setStartDay(Math.min(Number(event.target.value), endDay - 1))} /><input type="range" min={minDay} max={maxDay} value={endDay} onChange={(event) => setEndDay(Math.max(Number(event.target.value), startDay + 1))} /></div>
       <div className="timeline-caption"><span>{dayToDate(minDay)}</span><strong>{dayToDate(startDay)} → {dayToDate(endDay)}</strong><span>{dayToDate(maxDay)}</span></div>
-      <button className="primary-button" disabled={running} onClick={() => void run()}>{running ? t("calculating") : t("calculate")}</button>
+      <div className="range-shift-controls">
+        <div><strong>{t("shiftRange")}</strong><label><input type="number" min={1} max={365} value={shiftDays} onChange={(event) => setShiftDays(Math.max(1, Math.min(365, Number(event.target.value) || 1)))} /> {t("shiftDays")}</label></div>
+        <button className="secondary-button" disabled={startDay <= minDay} onClick={() => shiftRange(-1)} aria-label={`${t("moveEarlier")} ${shiftDays} ${t("shiftDays")}`}>← {t("moveEarlier")} {shiftDays}</button>
+        <button className="secondary-button" disabled={endDay >= maxDay} onClick={() => shiftRange(1)} aria-label={`${t("moveLater")} ${shiftDays} ${t("shiftDays")}`}>{t("moveLater")} {shiftDays} →</button>
+        <span className={`tiny-badge ${running ? "" : "live"}`}>{running ? t("calculating") : t("autoCalculate")}</span>
+      </div>
       {error && <div className="workspace-notice error">{error}</div>}
     </div>
     {analysis && <>
@@ -833,7 +1133,25 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
         {[["return_5d", t("return5"), "percent"], ["return_20d", t("return20"), "percent"], ["realized_volatility_20d", t("volatility20"), "percent"], ["volume_zscore_20d", t("volumeZ"), "decimal"], ["distance_ma20", t("distanceMa"), "percent"], ["drawdown_60d", t("drawdown60"), "percent"]].map(([key, label, kind]) => <div className="result-card" key={key}><div className="result-label">{label}</div><div className="result-value mono">{kind === "percent" ? formatPercent(analysis.metrics[key]) : analysis.metrics[key].toFixed(3)}</div></div>)}
       </div></div>
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("forecast")}</h2><p className="panel-subtitle">{t("forecastDisclaimer")}</p></div></div><div className="forecast-grid">
-        {[10, 30, 90].map((horizon) => { const forecast = analysis.forecasts[String(horizon)]; return <div className="forecast-card" key={horizon}><div className="forecast-top"><strong>{horizon} {t("sessions")}</strong><span className="tiny-badge">{forecast.status}</span></div>{forecast.status === "complete" ? <><div><span>{t("medianReturn")}</span><strong className="mono">{formatPercent(forecast.median_return)}</strong></div><div><span>{t("range1090")}</span><strong className="mono">{formatPercent(forecast.p10_return)} → {formatPercent(forecast.p90_return)}</strong></div><div><span>{t("positiveProbability")}</span><strong className="mono">{formatPercent(forecast.positive_probability, 1)}</strong></div><small>{forecast.sample_count} {t("analogSamples")}</small></> : <p>{t("insufficient")} ({forecast.sample_count})</p>}</div>; })}
+        {[10, 30, 90].map((horizon) => {
+          const forecast = analysis.forecasts[String(horizon)];
+          return <div className="forecast-card" key={horizon}>
+            <div className="forecast-top"><strong>{horizon} {t("sessions")}</strong><span className="tiny-badge">{forecast.status}</span></div>
+            {forecast.status === "complete" ? <>
+              <div><span>{t("medianReturn")} (50%)</span><strong className="mono">{formatPercent(forecast.p50_return ?? forecast.median_return)}</strong></div>
+              <div><span>{t("range1090")}</span><strong className="mono">{formatPercent(forecast.p10_return)} → {formatPercent(forecast.p90_return)}</strong></div>
+              <div className="forecast-price-heading"><span>{t("forecastPrices")}</span><small>{forecast.origin_date} · ${forecast.origin_price?.toFixed(2)}</small></div>
+              <div className="forecast-price-levels">
+                <div><span>{t("p10Price")}</span><strong className="mono">${forecast.p10_price?.toFixed(2)}</strong></div>
+                <div className="median"><span>{t("p50Price")}</span><strong className="mono">${forecast.p50_price?.toFixed(2)}</strong></div>
+                <div><span>{t("p90Price")}</span><strong className="mono">${forecast.p90_price?.toFixed(2)}</strong></div>
+              </div>
+              <ForecastBandChart forecast={forecast} />
+              <div><span>{t("positiveProbability")}</span><strong className="mono">{formatPercent(forecast.positive_probability, 1)}</strong></div>
+              <small>{forecast.sample_count} {t("analogSamples")}</small>
+            </> : <p>{t("insufficient")} ({forecast.sample_count})</p>}
+          </div>;
+        })}
       </div></div>
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("forecastWindowEvents")}</h2><p className="panel-subtitle">{analysis.actual_end} → {analysis.forecast_horizon_ends["90"]}</p></div><button className="secondary-button" disabled={eventRefreshing} onClick={() => void researchForecastEvents()}>{eventRefreshing ? t("refreshingEvents") : t("researchForecastEvents")}</button></div>
         {analysis.scheduled_events.length ? <div className="forecast-event-list">{analysis.scheduled_events.map((event) => {
@@ -914,7 +1232,7 @@ function BacktestView({ backtests, run, running }: { backtests: Backtest[]; run:
   const latest = backtests[0];
   const result = latest?.result ?? latest;
   return <div className="page-section"><Header eyebrow={t("walkForward")} title={t("testWithoutInventing")} copy={t("testWithoutInventingCopy")}><select className="filter-select" value={horizon} onChange={(event) => setHorizon(Number(event.target.value))}><option value={10}>10 {t("sessions")}</option><option value={30}>30 {t("sessions")}</option><option value={90}>90 {t("sessions")}</option></select><button className="primary-button" disabled={running} onClick={() => void run(horizon)}>{running ? t("running") : t("runBacktest")}</button></Header>
-    {!latest ? <div className="panel empty-market"><h2>{t("noBacktestResults")}</h2><p>{t("backtestEmptyCopy")}</p></div> : <><div className="result-grid"><div className="result-card"><div className="result-label">{t("meanIc")}</div><div className="result-value mono">{result.mean_spearman_ic == null ? "—" : result.mean_spearman_ic.toFixed(3)}</div></div><div className="result-card"><div className="result-label">{t("spread")}</div><div className="result-value mono">{formatPercent(result.mean_top_bottom_spread)}</div></div><div className="result-card"><div className="result-label">{t("directionAccuracy")}</div><div className="result-value mono">{formatPercent(result.direction_accuracy)}</div></div><div className="result-card"><div className="result-label">{t("observations")}</div><div className="result-value mono">{result.observation_count}</div><div className="result-delta">{result.symbol_count} {t("symbols")}</div></div></div><div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("methodLimits")}</h2><p className="panel-subtitle">{result.version}</p></div></div><div className="note-list">{result.warnings.map((warning, index) => <div className="research-note" key={warning}>{language === "zh" ? (index === 0 ? "結果未計入手續費、滑價、稅務、借券成本與存活者偏差修正。" : "這是研究診斷，不是投資建議或交易指令。") : warning}</div>)}</div></div></>}
+    {!latest ? <div className="panel empty-market"><h2>{t("noBacktestResults")}</h2><p>{t("backtestEmptyCopy")}</p></div> : <><div className="result-grid"><div className="result-card"><div className="result-label">{t("meanIc")}</div><div className="result-value mono">{result.mean_spearman_ic == null ? "—" : result.mean_spearman_ic.toFixed(3)}</div></div><div className="result-card"><div className="result-label">{t("spread")}</div><div className="result-value mono">{formatPercent(result.mean_top_bottom_spread)}</div></div><div className="result-card"><div className="result-label">{t("directionAccuracy")}</div><div className="result-value mono">{formatPercent(result.direction_accuracy)}</div></div><div className="result-card"><div className="result-label">{t("observations")}</div><div className="result-value mono">{result.observation_count}</div><div className="result-delta">{result.symbol_count} {t("symbols")}</div></div></div><div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("volatilitySurface")}</h2><p className="panel-subtitle">{t("volatilitySurfaceCopy")}</p></div>{result.volatility_surface && <span className="tiny-badge">{result.volatility_surface.lookback_sessions}D</span>}</div>{result.volatility_surface ? <VolatilitySurfaceChart surface={result.volatility_surface} /> : <div className="empty-state">{t("noVolatilitySurface")}</div>}</div><div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("methodLimits")}</h2><p className="panel-subtitle">{result.version}</p></div></div><div className="note-list">{result.warnings.map((warning, index) => <div className="research-note" key={warning}>{language === "zh" ? (index === 0 ? "結果未計入手續費、滑價、稅務、借券成本與存活者偏差修正。" : "這是研究診斷，不是投資建議或交易指令。") : warning}</div>)}</div></div></>}
   </div>;
 }
 

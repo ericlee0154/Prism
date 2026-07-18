@@ -29,9 +29,14 @@
   distance, and drawdown from stored bars.
 - [x] Allow an explicit start and end date for every range analysis.
 - [x] Provide synchronized date inputs and a draggable two-ended timeline.
+- [x] Recalculate automatically after range changes and shift a fixed-width
+  interval earlier or later by a configurable number of days.
 - [x] Record requested coverage separately from actual provider coverage.
 - [x] Produce 10-, 30-, and 90-session historical-analog forecasts using only
   earlier outcomes inside the selected interval.
+- [x] Report 10%, 50%, and 90% forecast returns and price levels.
+- [x] Attach realized target prices and ±5-session context only inside forecast
+  validation, without leaking post-range bars into metrics or analogs.
 - [x] Refuse to produce forecast values when fewer than ten analog samples
   exist.
 - [x] Rank symbols only against the currently stored universe.
@@ -45,6 +50,7 @@
 - [x] Run walk-forward diagnostics using only prior observations.
 - [x] Support 10-, 30-, and 90-session horizons.
 - [x] Store every backtest run and its parameters in DuckDB.
+- [x] Store and render a 3D realized-volatility surface after each backtest.
 - [x] Report observation count, evaluation dates, Spearman IC, top-bottom
   spread, and direction accuracy.
 - [x] Return `insufficient_data` instead of fabricated results.

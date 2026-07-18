@@ -14,7 +14,7 @@ from .ai_events import (
 from .backtest import BACKTEST_VERSION, walk_forward_backtest
 from .codex_cli_events import CodexCliEventResearchProvider
 from .event_reaction import REACTION_VERSION, compute_event_reaction
-from .forecast import historical_analog_forecast
+from .forecast import attach_historical_actuals, historical_analog_forecast
 from .metrics import CATALOG, METRIC_VERSION, compute_price_metrics
 from .providers.massive import MassiveMarketDataProvider, MassiveQuotaExceeded
 from .repository import PrismRepository
@@ -223,9 +223,31 @@ class PrismService:
             )
             for horizon in (10, 30, 90)
         }
+        # This is the only out-of-range market-data read in range analysis.
+        # It is attached after metrics and forecasts are frozen, solely to
+        # evaluate forecasts whose future sessions are already stored.
+        future_bars = self.repository.list_bars(
+            ticker,
+            start=datetime.combine(
+                actual_end + timedelta(days=1),
+                time.min,
+                tzinfo=UTC,
+            ),
+        )
+        forecasts = {
+            horizon: attach_historical_actuals(
+                forecast,
+                future_bars=future_bars,
+            )
+            for horizon, forecast in forecasts.items()
+        }
         horizon_ends = {
-            str(horizon): actual_end
-            + timedelta(days=math.ceil(horizon * 7 / 5) + 4)
+            str(horizon): (
+                date.fromisoformat(forecasts[str(horizon)]["actual_target"]["date"])
+                if forecasts[str(horizon)]["actual_target"]
+                else actual_end
+                + timedelta(days=math.ceil(horizon * 7 / 5) + 4)
+            )
             for horizon in (10, 30, 90)
         }
         scheduled_events = []

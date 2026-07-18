@@ -105,10 +105,20 @@ bottom spread, and directional accuracy. Results exclude fees, slippage, taxes,
 borrow costs, and survivorship corrections.
 
 The **Range metrics** screen provides synchronized date inputs and a draggable
-two-ended timeline. It calculates a point-in-time metric snapshot at the chosen
-end date and builds 10-, 30-, and 90-session historical-analog forecasts using
-only earlier outcomes inside the selected interval. If fewer than ten eligible
-analogs exist, no forecast values are produced.
+two-ended timeline. Any symbol or range change recalculates automatically, and
+the complete interval can be shifted earlier or later by a chosen number of
+days for continuity checks. It calculates a point-in-time metric snapshot at
+the chosen end date and builds 10-, 30-, and 90-session historical-analog
+forecasts using only earlier outcomes inside the selected interval. If fewer
+than ten eligible analogs exist, no forecast values are produced.
+
+Completed forecasts expose 10%, 50%, and 90% return and price levels. When
+stored bars exist after a historical analysis cutoff, only the forecast
+validation section reads them and displays the realized target plus the five
+sessions before and after it. Those future bars never enter the metric
+snapshot, selected-range series, or analog generation. Walk-forward results
+also include a three-dimensional surface of annualized 20-session realized
+volatility by evaluation date and symbol.
 
 ## Event and confidence research
 

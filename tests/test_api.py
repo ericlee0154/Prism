@@ -136,6 +136,73 @@ def test_scanner_is_derived_from_stored_bars(client: TestClient) -> None:
     assert body["forecasts"]["10"]["status"] == "complete"
     assert body["forecasts"]["10"]["sample_count"] > 0
 
+    backtest = client.post(
+        "/api/v1/backtests",
+        json={"horizon_sessions": 10},
+    )
+    assert backtest.status_code == 201
+    surface = backtest.json()["volatility_surface"]
+    assert surface["symbols"] == ["REAL"]
+    assert surface["dates"]
+    assert len(surface["values"]) == 1
+    assert len(surface["values"][0]) == len(surface["dates"])
+
+
+def test_forecast_actuals_are_the_only_out_of_range_analysis_data(
+    client: TestClient,
+) -> None:
+    start = datetime(2025, 1, 2, 21, 5, tzinfo=UTC)
+    bars = [
+        Bar(
+            symbol="HIST",
+            timestamp=start + timedelta(days=index),
+            available_at=start + timedelta(days=index),
+            open=(100 + index if index < 120 else 9_900 + index),
+            high=(102 + index if index < 120 else 9_902 + index),
+            low=(99 + index if index < 120 else 9_899 + index),
+            close=(101 + index if index < 120 else 9_901 + index),
+            volume=1_000_000 + index * 1_000,
+            source="massive",
+        )
+        for index in range(160)
+    ]
+    client.app.state.repository.upsert_bars(bars)
+    selected_end = bars[119].timestamp.date().isoformat()
+    response = client.post(
+        "/api/v1/analyses",
+        json={
+            "symbol": "HIST",
+            "start_date": bars[0].timestamp.date().isoformat(),
+            "end_date": selected_end,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["bar_count"] == 120
+    assert body["actual_end"] == selected_end
+    assert body["series"][-1]["date"] == selected_end
+    assert max(point["close"] for point in body["series"]) < 1_000
+    assert datetime.fromisoformat(body["data_cutoff"]).date().isoformat() == selected_end
+
+    forecast_10 = body["forecasts"]["10"]
+    assert forecast_10["status"] == "complete"
+    assert forecast_10["p50_return"] == forecast_10["median_return"]
+    assert forecast_10["p50_price"] == pytest.approx(
+        forecast_10["origin_price"] * (1 + forecast_10["p50_return"])
+    )
+    assert forecast_10["actual_status"] == "complete"
+    assert forecast_10["actual_window_complete"] is True
+    assert [item["session_offset"] for item in forecast_10["actual_window"]] == list(
+        range(-5, 6)
+    )
+    assert all(
+        item["date"] > selected_end for item in forecast_10["actual_window"]
+    )
+
+    assert body["forecasts"]["30"]["actual_status"] == "complete"
+    assert body["forecasts"]["90"]["actual_status"] == "pending"
+
 
 def test_analysis_never_fills_a_missing_range(client: TestClient) -> None:
     response = client.post(

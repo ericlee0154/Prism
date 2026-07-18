@@ -349,6 +349,42 @@ textarea:focus-visible {
   color: var(--ink);
 }
 
+.range-shift-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.range-shift-controls > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.range-shift-controls > div strong {
+  color: var(--ink);
+}
+
+.range-shift-controls label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.range-shift-controls input {
+  width: 64px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  font-family: var(--font-geist-mono), monospace;
+}
+
 .coverage-panel {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -418,7 +454,7 @@ textarea:focus-visible {
 }
 
 .forecast-top,
-.forecast-card > div {
+.forecast-card > div:not(.forecast-band):not(.forecast-price-levels) {
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -429,6 +465,169 @@ textarea:focus-visible {
 .forecast-card p {
   color: var(--muted);
   font-size: 11px;
+}
+
+.forecast-price-heading {
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.forecast-price-heading small {
+  text-align: right;
+}
+
+.forecast-price-levels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.forecast-price-levels > div {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px dashed #a9b7a4;
+  border-radius: 8px;
+  background: #f8faf5;
+}
+
+.forecast-price-levels > div.median {
+  border-style: solid;
+  border-color: var(--dark);
+  background: var(--lime-soft);
+}
+
+.forecast-band {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.forecast-band canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcf8;
+}
+
+.forecast-chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.forecast-legend {
+  width: 20px;
+  height: 0;
+  margin-left: 6px;
+  border-top: 2px solid;
+}
+
+.forecast-legend.actual {
+  margin-left: 0;
+  border-color: #df6846;
+}
+
+.forecast-legend.median {
+  border-color: var(--dark);
+}
+
+.forecast-legend.interval {
+  border-color: #688346;
+  border-top-style: dashed;
+}
+
+.actual-target {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f2f5ee;
+}
+
+.actual-target span,
+.actual-window-title {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.actual-target strong {
+  font-size: 11px;
+}
+
+.coverage-warning.compact {
+  display: block;
+  padding: 8px 10px;
+  font-size: 10px;
+}
+
+.actual-window {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.actual-row {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  gap: 8px;
+  padding: 6px 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.actual-row + .actual-row {
+  border-top: 1px solid #edf0e9;
+}
+
+.actual-row.target {
+  background: var(--lime-soft);
+  color: var(--ink);
+}
+
+.empty-state.compact {
+  padding: 12px;
+  font-size: 11px;
+}
+
+.volatility-surface {
+  display: grid;
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.volatility-surface canvas {
+  display: block;
+  width: 100%;
+  min-width: 680px;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfcf8;
+}
+
+.surface-scale {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 280px) auto;
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+}
+
+.surface-scale i {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(63 145 69), rgb(233 90 69));
 }
 
 .forecast-footnote {
@@ -449,6 +648,18 @@ textarea:focus-visible {
   .timeline-caption {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .range-shift-controls {
+    align-items: stretch;
+  }
+
+  .range-shift-controls > div {
+    width: 100%;
+  }
+
+  .range-shift-controls .secondary-button {
+    flex: 1;
   }
 }
 

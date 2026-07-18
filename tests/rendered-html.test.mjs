@@ -15,7 +15,10 @@ test("builds the local real-data Prism research workspace", async () => {
   assert.match(app, /Synchronize to DuckDB/);
   assert.match(app, /no substitute data is displayed/);
   assert.match(app, /區間 Metrics/);
-  assert.match(app, /Calculate metrics & forecast/);
+  assert.match(app, /Recalculates automatically after changes/);
+  assert.match(app, /50% median/);
+  assert.match(app, /Historical actual/);
+  assert.match(app, /3D volatility surface/);
   assert.match(app, /World & company events/);
   assert.match(app, /Institution confidence · weekly/);
   assert.match(app, /Company long-term confidence · monthly/);

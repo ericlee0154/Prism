@@ -8,7 +8,7 @@ from typing import Sequence
 from .models import Bar
 
 
-FORECAST_VERSION = "historical-analog-v1.0"
+FORECAST_VERSION = "historical-analog-v1.1"
 
 
 def _quantile(values: Sequence[float], probability: float) -> float | None:
@@ -109,14 +109,92 @@ def historical_analog_forecast(
         : min(analog_count, len(candidates))
     ]
     returns = [item[1] for item in nearest]
+    origin = ordered[-1]
+    p10_return = _quantile(returns, 0.1)
+    p50_return = _quantile(returns, 0.5)
+    p90_return = _quantile(returns, 0.9)
     return {
         "status": "complete",
         "version": FORECAST_VERSION,
         "horizon_sessions": horizon_sessions,
         "sample_count": len(returns),
-        "median_return": _quantile(returns, 0.5),
-        "p10_return": _quantile(returns, 0.1),
-        "p90_return": _quantile(returns, 0.9),
+        "origin_date": origin.timestamp.astimezone(UTC).date().isoformat(),
+        "origin_price": origin.close,
+        "median_return": p50_return,
+        "p10_return": p10_return,
+        "p50_return": p50_return,
+        "p90_return": p90_return,
+        "p10_price": (
+            origin.close * (1.0 + p10_return)
+            if p10_return is not None
+            else None
+        ),
+        "p50_price": (
+            origin.close * (1.0 + p50_return)
+            if p50_return is not None
+            else None
+        ),
+        "p90_price": (
+            origin.close * (1.0 + p90_return)
+            if p90_return is not None
+            else None
+        ),
         "positive_probability": sum(value > 0 for value in returns) / len(returns),
         "analog_dates": [item[2] for item in nearest[:10]],
+    }
+
+
+def attach_historical_actuals(
+    forecast: dict,
+    *,
+    future_bars: Sequence[Bar],
+) -> dict:
+    """Attach realized prices without exposing them to forecast generation."""
+    horizon_sessions = int(forecast["horizon_sessions"])
+    ordered = sorted(future_bars, key=lambda bar: bar.timestamp)
+    target_index = horizon_sessions - 1
+    if target_index < 0 or target_index >= len(ordered):
+        return {
+            **forecast,
+            "actual_status": "pending",
+            "actual_target": None,
+            "actual_window": [],
+            "actual_window_complete": False,
+            "actual_data_cutoff": None,
+        }
+
+    target = ordered[target_index]
+    origin_price = forecast.get("origin_price")
+    window_start = max(0, target_index - 5)
+    window_end = min(len(ordered), target_index + 6)
+    actual_window = [
+        {
+            "session_offset": index - target_index,
+            "date": bar.timestamp.astimezone(UTC).date().isoformat(),
+            "close": bar.close,
+        }
+        for index, bar in enumerate(
+            ordered[window_start:window_end],
+            start=window_start,
+        )
+    ]
+    return {
+        **forecast,
+        "actual_status": "complete",
+        "actual_target": {
+            "date": target.timestamp.astimezone(UTC).date().isoformat(),
+            "close": target.close,
+            "return": (
+                target.close / float(origin_price) - 1.0
+                if origin_price
+                else None
+            ),
+        },
+        "actual_window": actual_window,
+        "actual_window_complete": (
+            target_index >= 5 and target_index + 5 < len(ordered)
+        ),
+        "actual_data_cutoff": max(
+            bar.available_at for bar in ordered[window_start:window_end]
+        ).isoformat(),
     }

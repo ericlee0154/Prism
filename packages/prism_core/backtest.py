@@ -54,16 +54,9 @@ def _feature_score(bars: Sequence[Bar], index: int) -> float | None:
     return_60 = close / closes[index - 60] - 1.0
     trailing = closes[index - 19 : index + 1]
     distance_ma20 = close / statistics.mean(trailing) - 1.0
-    daily_returns = [
-        math.log(closes[position] / closes[position - 1])
-        for position in range(index - 19, index + 1)
-        if closes[position - 1] > 0 and closes[position] > 0
-    ]
-    volatility = (
-        statistics.stdev(daily_returns) * math.sqrt(252)
-        if len(daily_returns) > 1
-        else 0.0
-    )
+    volatility = _realized_volatility(bars, index)
+    if volatility is None:
+        return None
     volume_window = volumes[index - 19 : index + 1]
     volume_std = statistics.stdev(volume_window) if len(volume_window) > 1 else 0.0
     volume_z = (
@@ -80,6 +73,27 @@ def _feature_score(bars: Sequence[Bar], index: int) -> float | None:
     )
 
 
+def _realized_volatility(
+    bars: Sequence[Bar],
+    index: int,
+    *,
+    lookback_sessions: int = 20,
+) -> float | None:
+    if index < lookback_sessions:
+        return None
+    closes = [bar.close for bar in bars]
+    daily_returns = [
+        math.log(closes[position] / closes[position - 1])
+        for position in range(index - lookback_sessions + 1, index + 1)
+        if closes[position - 1] > 0 and closes[position] > 0
+    ]
+    return (
+        statistics.stdev(daily_returns) * math.sqrt(252)
+        if len(daily_returns) > 1
+        else 0.0
+    )
+
+
 def walk_forward_backtest(
     histories: dict[str, list[Bar]],
     *,
@@ -90,6 +104,7 @@ def walk_forward_backtest(
         raise ValueError("Horizon must be 10, 30, or 90 sessions")
     observations: list[Observation] = []
     per_date: dict[str, list[Observation]] = {}
+    volatility_by_symbol: dict[str, dict[str, float]] = {}
 
     for symbol, bars in histories.items():
         ordered = sorted(bars, key=lambda bar: bar.timestamp)
@@ -104,6 +119,9 @@ def walk_forward_backtest(
             observations.append(observation)
             date_key = ordered[index].timestamp.date().isoformat()
             per_date.setdefault(date_key, []).append(observation)
+            volatility = _realized_volatility(ordered, index)
+            if volatility is not None:
+                volatility_by_symbol.setdefault(symbol, {})[date_key] = volatility
 
     daily_ics: list[float] = []
     spreads: list[float] = []
@@ -127,6 +145,28 @@ def walk_forward_backtest(
             directional_hits += int((item.score >= 0) == (item.forward_return >= 0))
             direction_count += 1
 
+    surface_dates = sorted(
+        {
+            date_key
+            for values in volatility_by_symbol.values()
+            for date_key in values
+        }
+    )[-80:]
+    surface_symbols = sorted(volatility_by_symbol)
+    volatility_surface = {
+        "dates": surface_dates,
+        "symbols": surface_symbols,
+        "values": [
+            [
+                volatility_by_symbol[symbol].get(date_key)
+                for date_key in surface_dates
+            ]
+            for symbol in surface_symbols
+        ],
+        "unit": "annualized_decimal",
+        "lookback_sessions": 20,
+    }
+
     return {
         "status": "complete" if observations else "insufficient_data",
         "version": BACKTEST_VERSION,
@@ -140,6 +180,7 @@ def walk_forward_backtest(
         "direction_accuracy": (
             directional_hits / direction_count if direction_count else None
         ),
+        "volatility_surface": volatility_surface,
         "warnings": [
             "Results exclude fees, slippage, taxes, borrow costs, and survivorship corrections.",
             "This is a research diagnostic, not a recommendation or trading instruction.",
