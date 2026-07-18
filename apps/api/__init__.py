@@ -1,0 +1,1 @@
+"""Prism FastAPI application package."""
