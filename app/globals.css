@@ -1902,6 +1902,38 @@ textarea:focus-visible {
   background: #f0f5e9;
 }
 
+.data-table tbody tr.is-held {
+  background: #f1f7e6;
+  box-shadow: inset 3px 0 0 #8ca858;
+}
+
+.data-table tbody tr.is-held:hover,
+.data-table tbody tr.is-held.selected {
+  background: #e7f1d4;
+}
+
+.holding-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  padding: 5px 8px;
+  border: 1px solid #dfe4dc;
+  border-radius: 999px;
+  background: #f7f8f5;
+  color: #7a847e;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.holding-status.held {
+  border-color: #b8ca91;
+  background: #dcebbd;
+  color: #395126;
+}
+
 .data-table tbody tr:last-child td {
   border-bottom: 0;
 }

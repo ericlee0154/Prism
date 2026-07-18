@@ -509,6 +509,9 @@ const translations = {
     en: "Enter a holding with the form. Prism stores only a local snapshot and never creates trading instructions.",
   },
   holdingCount: { zh: "持倉筆數", en: "Holdings" },
+  holdingStatus: { zh: "持倉狀態", en: "Position" },
+  held: { zh: "持有", en: "Held" },
+  notHeld: { zh: "未持有", en: "Not held" },
   lotCount: { zh: "明細筆數", en: "Lots" },
   holdingLots: { zh: "持倉明細", en: "Holding details" },
   unitCost: { zh: "每股成本", en: "Unit cost" },
@@ -1062,18 +1065,22 @@ function SummaryCards({ overview }: { overview: Overview }) {
   </div>;
 }
 
-function StockTable({ stocks, active, setActive, horizon, search, catalog }: { stocks: Stock[]; active: Stock | null; setActive: (stock: Stock) => void; horizon: Horizon; search: string; catalog: MetricCatalog | null }) {
+function StockTable({ stocks, active, setActive, horizon, search, catalog, heldSymbols }: { stocks: Stock[]; active: Stock | null; setActive: (stock: Stock) => void; horizon: Horizon; search: string; catalog: MetricCatalog | null; heldSymbols?: ReadonlySet<string> }) {
   const { t } = useI18n();
   const visible = useMemo(() => stocks.filter((stock) => stock.symbol.includes(search.trim().toUpperCase())).sort((a, b) => scoreFor(b, horizon) - scoreFor(a, horizon)), [stocks, search, horizon]);
   const metric = (name: string) => catalog?.items.find((item) => item.name === name);
   const scannerModel = catalog?.score_models.find((item) => item.id === "scanner_relative_score");
-  return <div className="table-wrap"><table className="data-table"><thead><tr><th>{t("symbol")}</th><th>{t("latestClose")}</th><th><MetricLabel definition={metric("return_5d")}>{t("return5")}</MetricLabel></th><th><MetricLabel definition={metric("return_20d")}>{t("return20")}</MetricLabel></th><th><MetricLabel definition={metric("realized_volatility_20d")}>{t("volatility20")}</MetricLabel></th><th><MetricLabel definition={metric("drawdown_60d")}>{t("drawdown60")}</MetricLabel></th><th><MetricLabel scoreModel={scannerModel}>{horizon} {t("score")}</MetricLabel></th><th>{t("rows")}</th></tr></thead><tbody>
-    {visible.map((stock) => <tr key={stock.symbol} className={active?.symbol === stock.symbol ? "selected" : ""} onClick={() => setActive(stock)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setActive(stock); }}>
+  return <div className="table-wrap"><table className="data-table"><thead><tr><th>{t("symbol")}</th>{heldSymbols && <th>{t("holdingStatus")}</th>}<th>{t("latestClose")}</th><th><MetricLabel definition={metric("return_5d")}>{t("return5")}</MetricLabel></th><th><MetricLabel definition={metric("return_20d")}>{t("return20")}</MetricLabel></th><th><MetricLabel definition={metric("realized_volatility_20d")}>{t("volatility20")}</MetricLabel></th><th><MetricLabel definition={metric("drawdown_60d")}>{t("drawdown60")}</MetricLabel></th><th><MetricLabel scoreModel={scannerModel}>{horizon} {t("score")}</MetricLabel></th><th>{t("rows")}</th></tr></thead><tbody>
+    {visible.map((stock) => {
+      const isHeld = heldSymbols?.has(stock.symbol) ?? false;
+      return <tr key={stock.symbol} className={`${active?.symbol === stock.symbol ? "selected" : ""} ${isHeld ? "is-held" : ""}`.trim()} onClick={() => setActive(stock)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setActive(stock); }}>
       <td><strong>{stock.symbol}</strong><div className="company-name">{stock.source}</div></td>
+      {heldSymbols && <td><span className={`holding-status ${isHeld ? "held" : ""}`}>{isHeld ? t("held") : t("notHeld")}</span></td>}
       <td className="mono">${stock.price.toFixed(2)}<div className={stock.change != null && stock.change >= 0 ? "positive-text" : "negative-text"}>{stock.change == null ? "—" : `${stock.change >= 0 ? "+" : ""}${stock.change.toFixed(2)}%`}</div></td>
       <td className="mono">{formatPercent(stock.metrics.return_5d)}</td><td className="mono">{formatPercent(stock.metrics.return_20d)}</td><td className="mono">{formatPercent(stock.metrics.realized_volatility_20d, 1)}</td><td className="mono">{formatPercent(stock.metrics.drawdown_60d)}</td>
       <td><span className={`score-pill ${scoreFor(stock, horizon) >= 60 ? "positive" : scoreFor(stock, horizon) < 40 ? "negative" : "neutral"}`}>{scoreFor(stock, horizon).toFixed(1)}</span></td><td className="mono">{stock.bar_count}</td>
-    </tr>)}
+    </tr>;
+    })}
   </tbody></table>{!visible.length && <div className="empty-state">{t("noMatch")}</div>}</div>;
 }
 
@@ -1847,6 +1854,10 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   const navItems: { id: View; label: string; icon: string }[] = [
     { id: "overview", label: t("overview"), icon: "⌁" }, { id: "scanner", label: t("scanner"), icon: "◎" }, { id: "metrics", label: t("metrics"), icon: "↔" }, { id: "portfolio", label: t("portfolio"), icon: "◫" }, { id: "events", label: t("events"), icon: "◉" }, { id: "backtest", label: t("backtests"), icon: "ƒ" }, { id: "data", label: t("dataPipeline"), icon: "⇄" },
   ];
+  const heldSymbols = useMemo(
+    () => new Set((portfolioCenter?.items ?? []).map((holding) => holding.symbol)),
+    [portfolioCenter],
+  );
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -1881,7 +1892,7 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   return <div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">P</div><div><div className="brand-name">Prism</div><div className="brand-sub">{t("localWorkbench")}</div></div></div><div className="nav-label">{t("workspace")}</div><nav className="nav-list">{navItems.map((item) => <button key={item.id} className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)}><span className="nav-icon">{item.icon}</span><span>{item.label}</span></button>)}</nav><div className="sidebar-spacer" /><div className="data-card"><div className="data-card-top"><span className="data-card-title">{overview?.market.bar_count ? t("realStoredData") : t("noMarketData")}</span><span className={`status-dot ${overview?.market.bar_count ? "" : "status-dot-empty"}`} /></div><p className="data-card-copy">{overview?.market.bar_count ? `${overview.market.symbol_count} ${t("symbols")} · Massive · ${t("noFallback")}` : t("emptyExplanation")}</p></div><div className="sidebar-footer"><div className="avatar">{(initialUser?.displayName ?? t("localResearcher")).slice(0, 1)}</div><span className="identity-copy"><strong>{initialUser?.displayName ?? t("localResearcher")}</strong><small>{t("localOnly")}</small></span></div></aside>
     <div className="workspace"><header className="topbar"><div className="search"><span className="search-icon">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("filterSymbols")} /></div><div className="topbar-actions"><span className="cutoff mono">{overview?.market.data_cutoff ? `MASSIVE EOD · ${format.date(overview.market.data_cutoff)}` : t("noMarketData")}</span><button className="language-button" onClick={() => setLanguage(language === "zh" ? "en" : "zh")}>{t("language")}</button><button className="icon-button" onClick={() => void load()}>↻</button><button className="primary-button" onClick={() => setView("data")}>{t("syncData")}</button></div></header>
       <main className="main">{loading && <div className="workspace-notice">{t("loading")}</div>}{error && <div className="workspace-notice error"><span>{t("apiError")} {error}</span><button className="secondary-button" onClick={() => void load()}>{t("retry")}</button></div>}
-        {!loading && !error && view === "overview" && overview && <div className="page-section"><Header eyebrow={t("realStoredData")} title={t("researchStored")} copy={t("researchStoredCopy")} />{overview.market.bar_count === 0 ? <EmptyMarket onOpenData={() => setView("data")} /> : <><SummaryCards overview={overview} /><div className="content-grid"><div className="panel"><div className="panel-header"><div><h2 className="panel-title">{t("storedUniverse")}</h2><p className="panel-subtitle">{t("realCrossSection")}</p></div><button className="secondary-button" onClick={() => setView("scanner")}>{t("viewScanner")}</button></div><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div></>}</div>}
+        {!loading && !error && view === "overview" && overview && <div className="page-section"><Header eyebrow={t("realStoredData")} title={t("researchStored")} copy={t("researchStoredCopy")} />{overview.market.bar_count === 0 ? <EmptyMarket onOpenData={() => setView("data")} /> : <><SummaryCards overview={overview} /><div className="content-grid"><div className="panel"><div className="panel-header"><div><h2 className="panel-title">{t("storedUniverse")}</h2><p className="panel-subtitle">{t("realCrossSection")}</p></div><button className="secondary-button" onClick={() => setView("scanner")}>{t("viewScanner")}</button></div><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} heldSymbols={heldSymbols} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div></>}</div>}
         {!loading && !error && view === "scanner" && <div className="page-section"><Header eyebrow="Massive EOD" title={t("compareReal")} copy={t("compareRealCopy")}><div className="segments">{(["10D", "30D", "90D"] as Horizon[]).map((item) => <button key={item} className={`segment-button ${horizon === item ? "active" : ""}`} onClick={() => setHorizon(item)}>{item}</button>)}</div></Header>{!stocks.length ? <EmptyMarket onOpenData={() => setView("data")} /> : <div className="content-grid"><div className="panel"><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div>}</div>}
         {!loading && !error && <div className={view === "metrics" ? "" : "view-hidden"} aria-hidden={view !== "metrics"}><MetricsView stocks={stocks} catalog={metricCatalog} /></div>}
         {!loading && !error && view === "portfolio" && portfolioCenter && <PortfolioView center={portfolioCenter} setCenter={setPortfolioCenter} onOpenData={() => setView("data")} notify={setToast} />}
