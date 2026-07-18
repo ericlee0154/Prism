@@ -152,6 +152,7 @@ def test_portfolio_uses_only_stored_market_prices(client: TestClient) -> None:
             "symbol": "AAPL",
             "shares": 12,
             "average_cost": 160,
+            "acquired_date": "2025-01-02",
         },
     )
     assert updated.status_code == 201
@@ -162,8 +163,12 @@ def test_portfolio_uses_only_stored_market_prices(client: TestClient) -> None:
         (10 * 150 + 12 * 160) / 22
     )
     assert len(combined["lots"]) == 2
+    assert [lot["acquired_date"] for lot in combined["lots"]] == [
+        "2025-01-02",
+        "2024-01-02",
+    ]
 
-    second_lot = combined["lots"][1]
+    second_lot = combined["lots"][0]
     edited = client.post(
         "/api/v1/portfolio/holdings",
         json={
@@ -172,6 +177,7 @@ def test_portfolio_uses_only_stored_market_prices(client: TestClient) -> None:
             "symbol": "AAPL",
             "shares": 15,
             "average_cost": 155,
+            "acquired_date": "2025-01-02",
         },
     )
     assert edited.status_code == 201
@@ -180,9 +186,9 @@ def test_portfolio_uses_only_stored_market_prices(client: TestClient) -> None:
     assert edited.json()["summary"]["lot_count"] == 2
     assert edited.json()["summary"]["last_updated_at"] is not None
 
-    first_lot = edited.json()["items"][0]["lots"][0]
+    oldest_lot = edited.json()["items"][0]["lots"][1]
     lot_deleted = client.delete(
-        f"/api/v1/portfolio/holding-lots/{first_lot['lot_id']}"
+        f"/api/v1/portfolio/holding-lots/{oldest_lot['lot_id']}"
     )
     assert lot_deleted.status_code == 200
     remaining = lot_deleted.json()["items"][0]

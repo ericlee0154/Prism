@@ -1326,7 +1326,9 @@ class PrismRepository:
             SELECT lot_id, holding_id, shares, unit_cost, acquired_date, source,
                    source_reference, created_at, updated_at
             FROM portfolio_holding_lots
-            ORDER BY acquired_date NULLS LAST, created_at, lot_id
+            ORDER BY acquired_date DESC NULLS LAST,
+                     created_at DESC,
+                     lot_id DESC
             """
         ).fetchall()
         lots_by_holding: dict[str, list[dict[str, Any]]] = {}
