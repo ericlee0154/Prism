@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 type Language = "zh" | "en";
 type View = "overview" | "scanner" | "metrics" | "portfolio" | "events" | "backtest" | "data";
@@ -275,6 +275,43 @@ type MetricCatalog = {
   items: MetricDefinition[];
   score_models: ScoreModel[];
 };
+type ForecastSurfacePoint = {
+  origin_date: string;
+  target_date: string;
+  actual_price: number;
+  p10_price: number;
+  p50_price: number;
+  p90_price: number;
+  sample_count: number;
+};
+type ForecastSurfaceResult = {
+  status: "complete" | "insufficient_data";
+  horizon_sessions: number;
+  bar_count: number;
+  required_sessions: number;
+  minimum_surface_points: number;
+  minimum_analog_samples: number;
+  point_count?: number;
+  candidate_point_count?: number;
+  sampling_interval_sessions?: number;
+  data_cutoff?: string;
+  selected_start?: string;
+  selected_end?: string;
+  sources?: string[];
+  points: ForecastSurfacePoint[];
+};
+type ForecastSurfaceJob = {
+  job_id: string;
+  status: "queued" | "running" | "complete" | "insufficient_data" | "cancelled" | "failed";
+  progress: number;
+  created_at: string;
+  symbol: string;
+  start_date: string;
+  end_date: string;
+  horizon_sessions: number;
+  result: ForecastSurfaceResult | null;
+  error: string | null;
+};
 type Backtest = {
   backtest_id: string;
   created_at?: string;
@@ -287,13 +324,6 @@ type Backtest = {
   mean_spearman_ic: number | null;
   mean_top_bottom_spread: number | null;
   direction_accuracy: number | null;
-  volatility_surface?: {
-    dates: string[];
-    symbols: string[];
-    values: (number | null)[][];
-    unit: "annualized_decimal";
-    lookback_sessions: number;
-  };
   warnings: string[];
   result?: Omit<Backtest, "backtest_id" | "created_at" | "result">;
 };
@@ -323,6 +353,18 @@ type Pipeline = {
   analyses: unknown[];
   metric_version: string;
 };
+type PortfolioLot = {
+  lot_id: string;
+  holding_id: string;
+  shares: number;
+  unit_cost: number;
+  cost_basis: number;
+  acquired_date: string | null;
+  source: string;
+  source_reference: string | null;
+  created_at: string;
+  updated_at: string;
+};
 type PortfolioHolding = {
   holding_id: string;
   account_name: string;
@@ -341,11 +383,13 @@ type PortfolioHolding = {
   market_value: number | null;
   unrealized_pl: number | null;
   unrealized_percent: number | null;
+  lots: PortfolioLot[];
 };
 type PortfolioCenter = {
   items: PortfolioHolding[];
   summary: {
     holding_count: number;
+    lot_count: number;
     account_count: number;
     priced_count: number;
     pricing_complete: boolean;
@@ -355,6 +399,9 @@ type PortfolioCenter = {
     market_value: number | null;
     unrealized_pl: number | null;
     unrealized_percent: number | null;
+    holdings_updated_at: string | null;
+    market_synced_at: string | null;
+    last_updated_at: string | null;
   };
 };
 
@@ -441,20 +488,20 @@ const translations = {
     zh: "股數與成本只存在本機 DuckDB；估值只使用 Prism 已儲存的 Massive 收盤價。缺少價格時保持空白。",
     en: "Shares and cost basis stay in local DuckDB. Valuation uses only Massive closes already stored by Prism; missing prices remain blank.",
   },
-  addHolding: { zh: "新增／更新持倉", en: "Add / update holding" },
+  addHolding: { zh: "新增持倉明細", en: "Add holding lot" },
   accountName: { zh: "帳戶名稱", en: "Account name" },
   sharesHeld: { zh: "持有股數", en: "Shares held" },
   averageCost: { zh: "平均成本", en: "Average cost" },
   acquiredDate: { zh: "取得日期", en: "Acquired date" },
-  saveHolding: { zh: "儲存持倉", en: "Save holding" },
-  updateHolding: { zh: "更新持倉", en: "Update holding" },
+  saveHolding: { zh: "儲存這一筆", en: "Save lot" },
+  updateHolding: { zh: "更新持倉明細", en: "Update holding lot" },
   editHolding: { zh: "編輯", en: "Edit" },
   cancelEdit: { zh: "取消", en: "Cancel" },
   deleteHolding: { zh: "刪除", en: "Delete" },
   savingHolding: { zh: "儲存中…", en: "Saving…" },
   localHoldingFormCopy: {
-    zh: "相同帳戶與股票會更新既有持倉；這裡只記錄快照，不執行交易。",
-    en: "A matching account-symbol pair updates the existing holding. This records a snapshot and never executes trades.",
+    zh: "每次儲存都會保留為一筆明細；相同帳戶與股票會自動彙總股數與加權平均成本。",
+    en: "Each save keeps a separate lot. Matching account-symbol lots are summarized with total shares and weighted average cost.",
   },
   noHoldings: { zh: "尚未建立持倉", en: "No holdings yet" },
   noHoldingsCopy: {
@@ -462,6 +509,14 @@ const translations = {
     en: "Enter a holding with the form. Prism stores only a local snapshot and never creates trading instructions.",
   },
   holdingCount: { zh: "持倉筆數", en: "Holdings" },
+  lotCount: { zh: "明細筆數", en: "Lots" },
+  holdingLots: { zh: "持倉明細", en: "Holding details" },
+  unitCost: { zh: "每股成本", en: "Unit cost" },
+  enteredAt: { zh: "輸入時間", en: "Entered at" },
+  lastUpdatedAt: { zh: "上次更新時間", en: "Last updated" },
+  neverUpdated: { zh: "尚未更新", en: "Never updated" },
+  expandHolding: { zh: "展開持倉明細", en: "Expand holding details" },
+  collapseHolding: { zh: "收合持倉明細", en: "Collapse holding details" },
   accountCount: { zh: "帳戶數", en: "Accounts" },
   costBasis: { zh: "成本基礎", en: "Cost basis" },
   marketValue: { zh: "已定價市值", en: "Priced market value" },
@@ -475,9 +530,9 @@ const translations = {
     en: "These holdings remain unvalued until their symbols are synchronized from Massive:",
   },
   openDataSyncShort: { zh: "前往同步", en: "Open data sync" },
-  holdingSaved: { zh: "持倉已儲存", en: "Holding saved" },
-  holdingDeleted: { zh: "持倉已刪除", en: "Holding deleted" },
-  confirmDeleteHolding: { zh: "確定要刪除這筆本機持倉嗎？", en: "Delete this local holding?" },
+  holdingSaved: { zh: "持倉明細已儲存", en: "Holding lot saved" },
+  holdingDeleted: { zh: "持倉明細已刪除", en: "Holding lot deleted" },
+  confirmDeleteHolding: { zh: "確定要刪除這筆持倉明細嗎？", en: "Delete this holding lot?" },
   rangeMetricsTitle: { zh: "用你選擇的時間區間計算。", en: "Calculate over your selected timeline." },
   rangeMetrics: { zh: "Metrics 時間區間", en: "Metrics timeline" },
   rangeMetricsCopy: {
@@ -643,12 +698,34 @@ const translations = {
   spread: { zh: "Top-bottom spread", en: "Top-bottom spread" },
   directionAccuracy: { zh: "方向準確率", en: "Direction accuracy" },
   observations: { zh: "觀察值", en: "Observations" },
-  volatilitySurface: { zh: "3D 波動曲面", en: "3D volatility surface" },
-  volatilitySurfaceCopy: {
-    zh: "每個 walk-forward 評估點的 20 日年化已實現波動；X 軸是時間、Y 軸是股票、Z 軸是波動率。",
-    en: "Annualized 20-session realized volatility at each walk-forward evaluation point; X is time, Y is symbol, and Z is volatility.",
+  forecastSurface: { zh: "3D Forecast 歷史驗證", en: "3D forecast history validation" },
+  forecastSurfaceCopy: {
+    zh: "單一個股的時間 × 資料來源 × 股價；每個預測點只使用當時可見資料，歷史真值只供事後比較。",
+    en: "Time × data source × price for one stock. Every forecast uses only information available at its origin; actual prices are comparisons only.",
   },
-  noVolatilitySurface: { zh: "沒有足夠資料繪製波動曲面。", en: "Insufficient data for a volatility surface." },
+  autoSurface: { zh: "隨區間自動重算", en: "Recompute with range" },
+  autoSurfaceCopy: {
+    zh: "開啟後，股票、區間、平移或 horizon 改變會取消舊任務並在背景重算；切到其他頁面不會中斷目前任務。",
+    en: "When enabled, stock, range, shift, or horizon changes cancel stale work and recompute in the background. Visiting another page does not interrupt the active job.",
+  },
+  surfaceDisabled: {
+    zh: "3D 計算預設關閉。勾選後才會使用目前區間進行 rolling forecast。",
+    en: "3D computation is off by default. Enable it to run rolling forecasts over the selected range.",
+  },
+  surfaceCalculating: { zh: "背景計算中", en: "Computing in background" },
+  surfaceContinueBrowsing: {
+    zh: "可繼續查看其他頁面；變更條件時會取消這次計算。",
+    en: "You can keep browsing. Changing inputs cancels this computation.",
+  },
+  surfaceInsufficient: { zh: "所選區間的交易日不足", en: "The selected range has too few trading sessions" },
+  surfaceMinimum: { zh: "最低需求", en: "Minimum required" },
+  surfaceActual: { zh: "歷史真值", en: "Historical actual" },
+  surfaceP10: { zh: "10% 預測", en: "10% forecast" },
+  surfaceP50: { zh: "50% 預測", en: "50% forecast" },
+  surfaceP90: { zh: "90% 預測", en: "90% forecast" },
+  surfacePoints: { zh: "驗證點", en: "validation points" },
+  samplingEvery: { zh: "抽樣間距", en: "sampling interval" },
+  surfaceFailed: { zh: "3D Forecast 計算失敗", en: "3D forecast computation failed" },
   methodLimits: { zh: "方法限制", en: "Method limits" },
   localOnly: { zh: "Massive → DuckDB・僅限本機", en: "Massive → DuckDB · local only" },
   syncRealHistory: { zh: "同步真實歷史資料。", en: "Synchronize real history." },
@@ -1117,30 +1194,33 @@ function ForecastBandChart({ forecast }: { forecast: Forecast }) {
   </div>;
 }
 
-function VolatilitySurfaceChart({ surface }: { surface: NonNullable<Backtest["volatility_surface"]> }) {
-  const { language, t } = useI18n();
+function ForecastSurfaceChart({ result }: { result: ForecastSurfaceResult }) {
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const finiteValues = surface.values.flat().filter((value): value is number => value != null && Number.isFinite(value));
+  const sources = useMemo(() => [
+    { key: "actual_price" as const, label: t("surfaceActual"), color: "#152d22" },
+    { key: "p10_price" as const, label: t("surfaceP10"), color: "#df6846" },
+    { key: "p50_price" as const, label: t("surfaceP50"), color: "#427493" },
+    { key: "p90_price" as const, label: t("surfaceP90"), color: "#7ca344" },
+  ], [t]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !finiteValues.length || !surface.dates.length || !surface.symbols.length) return;
+    if (!canvas || !result.points.length) return;
     const context = canvas.getContext("2d");
     if (!context) return;
     const width = canvas.width;
     const height = canvas.height;
-    const low = Math.min(...finiteValues);
-    const high = Math.max(...finiteValues);
-    const dateCount = surface.dates.length;
-    const symbolCount = surface.symbols.length;
-    const project = (dateIndex: number, symbolIndex: number, value: number) => {
-      const xRatio = dateCount <= 1 ? 0.5 : dateIndex / (dateCount - 1);
-      const yRatio = symbolCount <= 1 ? 0.5 : symbolIndex / (symbolCount - 1);
+    const values = result.points.flatMap((point) => sources.map((source) => point[source.key]));
+    const low = Math.min(...values);
+    const high = Math.max(...values);
+    const project = (timeIndex: number, sourceIndex: number, value: number) => {
+      const xRatio = result.points.length <= 1 ? 0.5 : timeIndex / (result.points.length - 1);
+      const depthRatio = sources.length <= 1 ? 0.5 : sourceIndex / (sources.length - 1);
       const zRatio = high === low ? 0.5 : (value - low) / (high - low);
       return {
-        x: 82 + xRatio * 650 + yRatio * 105,
-        y: 350 - yRatio * 92 - zRatio * 220,
-        zRatio,
+        x: 88 + xRatio * 650 + depthRatio * 102,
+        y: 348 - depthRatio * 86 - zRatio * 218,
       };
     };
 
@@ -1148,77 +1228,85 @@ function VolatilitySurfaceChart({ surface }: { surface: NonNullable<Backtest["vo
     context.fillStyle = "#fbfcf8";
     context.fillRect(0, 0, width, height);
 
-    for (let symbolIndex = symbolCount - 2; symbolIndex >= 0; symbolIndex -= 1) {
-      for (let dateIndex = 0; dateIndex < dateCount - 1; dateIndex += 1) {
-        const corners = [
-          surface.values[symbolIndex]?.[dateIndex],
-          surface.values[symbolIndex]?.[dateIndex + 1],
-          surface.values[symbolIndex + 1]?.[dateIndex + 1],
-          surface.values[symbolIndex + 1]?.[dateIndex],
-        ];
-        if (corners.some((value) => value == null)) continue;
-        const points = [
-          project(dateIndex, symbolIndex, corners[0] as number),
-          project(dateIndex + 1, symbolIndex, corners[1] as number),
-          project(dateIndex + 1, symbolIndex + 1, corners[2] as number),
-          project(dateIndex, symbolIndex + 1, corners[3] as number),
-        ];
-        const average = points.reduce((sum, point) => sum + point.zRatio, 0) / points.length;
-        const red = Math.round(63 + average * 170);
-        const green = Math.round(145 - average * 55);
-        context.beginPath();
-        context.moveTo(points[0].x, points[0].y);
-        points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
-        context.closePath();
-        context.fillStyle = `rgba(${red}, ${green}, 69, 0.48)`;
-        context.fill();
-        context.strokeStyle = "rgba(21, 45, 34, 0.18)";
-        context.lineWidth = 0.65;
-        context.stroke();
-      }
+    context.strokeStyle = "rgba(101, 116, 105, 0.18)";
+    context.lineWidth = 1;
+    for (let priceStep = 0; priceStep <= 4; priceStep += 1) {
+      const price = low + ((high - low) * priceStep) / 4;
+      const front = project(0, 0, price);
+      const right = project(result.points.length - 1, 0, price);
+      const back = project(result.points.length - 1, sources.length - 1, price);
+      context.beginPath();
+      context.moveTo(front.x, front.y);
+      context.lineTo(right.x, right.y);
+      context.lineTo(back.x, back.y);
+      context.stroke();
+      context.fillStyle = "#68756c";
+      context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+      context.fillText(`$${price.toFixed(2)}`, 24, front.y + 3);
     }
 
-    surface.symbols.forEach((symbol, symbolIndex) => {
-      context.beginPath();
-      surface.dates.forEach((_, dateIndex) => {
-        const value = surface.values[symbolIndex]?.[dateIndex];
-        if (value == null) return;
-        const point = project(dateIndex, symbolIndex, value);
-        if (dateIndex === 0) context.moveTo(point.x, point.y);
-        else context.lineTo(point.x, point.y);
-      });
-      context.strokeStyle = "rgba(21, 45, 34, 0.56)";
-      context.lineWidth = 1.1;
-      context.stroke();
-      const lastValue = surface.values[symbolIndex]?.[dateCount - 1];
-      if (lastValue != null) {
-        const point = project(dateCount - 1, symbolIndex, lastValue);
-        context.fillStyle = "#152d22";
-        context.font = "600 10px ui-monospace, SFMono-Regular, Menlo, monospace";
-        context.fillText(symbol, point.x + 5, point.y + 3);
+    sources.forEach((source, sourceIndex) => {
+      if (sourceIndex < sources.length - 1) {
+        for (let timeIndex = 0; timeIndex < result.points.length - 1; timeIndex += 1) {
+          const current = result.points[timeIndex];
+          const next = result.points[timeIndex + 1];
+          const points = [
+            project(timeIndex, sourceIndex, current[source.key]),
+            project(timeIndex + 1, sourceIndex, next[source.key]),
+            project(timeIndex + 1, sourceIndex + 1, next[sources[sourceIndex + 1].key]),
+            project(timeIndex, sourceIndex + 1, current[sources[sourceIndex + 1].key]),
+          ];
+          context.beginPath();
+          context.moveTo(points[0].x, points[0].y);
+          points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+          context.closePath();
+          context.fillStyle = `${source.color}12`;
+          context.fill();
+          context.strokeStyle = "rgba(21, 45, 34, 0.08)";
+          context.lineWidth = 0.6;
+          context.stroke();
+        }
       }
+
+      context.beginPath();
+      result.points.forEach((point, timeIndex) => {
+        const projected = project(timeIndex, sourceIndex, point[source.key]);
+        if (timeIndex === 0) context.moveTo(projected.x, projected.y);
+        else context.lineTo(projected.x, projected.y);
+      });
+      context.strokeStyle = source.color;
+      context.lineWidth = sourceIndex === 0 || sourceIndex === 2 ? 2.4 : 1.8;
+      context.stroke();
+      result.points.forEach((point, timeIndex) => {
+        const projected = project(timeIndex, sourceIndex, point[source.key]);
+        context.beginPath();
+        context.fillStyle = source.color;
+        context.arc(projected.x, projected.y, timeIndex === result.points.length - 1 ? 3.2 : 1.5, 0, Math.PI * 2);
+        context.fill();
+      });
     });
 
     context.strokeStyle = "#8d9a8f";
     context.lineWidth = 1;
     context.beginPath();
-    context.moveTo(82, 350);
-    context.lineTo(732, 350);
-    context.lineTo(837, 258);
+    context.moveTo(88, 348);
+    context.lineTo(738, 348);
+    context.lineTo(840, 262);
     context.stroke();
     context.fillStyle = "#5e6b62";
     context.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
-    context.fillText(surface.dates[0] ?? "", 82, 374);
-    context.fillText(surface.dates[dateCount - 1] ?? "", 670, 374);
-    context.fillText(`${(low * 100).toFixed(1)}%`, 18, 350);
-    context.fillText(`${(high * 100).toFixed(1)}%`, 18, 130);
-    context.fillText(language === "zh" ? "年化波動率" : "Annualized volatility", 18, 108);
-  }, [finiteValues, language, surface]);
+    context.fillText(result.points[0].target_date, 88, 376);
+    context.fillText(result.points[result.points.length - 1].target_date, 664, 376);
+    sources.forEach((source, sourceIndex) => {
+      const axisPoint = project(result.points.length - 1, sourceIndex, low);
+      context.fillStyle = source.color;
+      context.fillText(source.label, axisPoint.x + 6, axisPoint.y + 4);
+    });
+  }, [result, sources]);
 
-  if (!finiteValues.length) return <div className="empty-state">{t("noVolatilitySurface")}</div>;
-  return <div className="volatility-surface">
-    <canvas ref={canvasRef} width={920} height={400} role="img" aria-label={t("volatilitySurface")} />
-    <div className="surface-scale"><span>{(Math.min(...finiteValues) * 100).toFixed(1)}%</span><i /><span>{(Math.max(...finiteValues) * 100).toFixed(1)}%</span></div>
+  return <div className="forecast-surface">
+    <canvas ref={canvasRef} width={920} height={400} role="img" aria-label={t("forecastSurface")} />
+    <div className="surface-legend">{sources.map((source) => <span key={source.key}><i style={{ background: source.color }} />{source.label}</span>)}</div>
   </div>;
 }
 
@@ -1237,7 +1325,17 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
   const [eventRefreshing, setEventRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [shiftDays, setShiftDays] = useState(1);
+  const [surfaceEnabled, setSurfaceEnabled] = useState(false);
+  const [surfaceHorizon, setSurfaceHorizon] = useState<10 | 30 | 90>(10);
+  const [surfaceJob, setSurfaceJob] = useState<ForecastSurfaceJob | null>(null);
+  const [surfaceError, setSurfaceError] = useState("");
   const requestSequence = useRef(0);
+  const surfaceJobId = useRef<string | null>(null);
+  const invalidateAnalysis = () => {
+    setAnalysis(null);
+    setSurfaceJob(null);
+    setSurfaceError("");
+  };
 
   const chooseSymbol = (value: string) => {
     const stock = stocks.find((item) => item.symbol === value);
@@ -1246,7 +1344,7 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
       setStartDay(dateToDay(stock.first_observation));
       setEndDay(dateToDay(stock.last_observation));
     }
-    setAnalysis(null);
+    invalidateAnalysis();
     setError("");
   };
   const run = useCallback(async (signal?: AbortSignal) => {
@@ -1285,17 +1383,62 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
       controller.abort();
     };
   }, [run, selected]);
+  useEffect(() => {
+    if (!surfaceEnabled || !analysis || !selected) return;
+    let active = true;
+    let jobId: string | null = null;
+    let terminal = false;
+    const terminalStatuses = new Set(["complete", "insufficient_data", "cancelled", "failed"]);
+    const compute = async () => {
+      try {
+        let job = await api<ForecastSurfaceJob>("/analyses/surface-jobs", {
+          method: "POST",
+          body: JSON.stringify({
+            symbol: selected.symbol,
+            start_date: analysis.requested_start,
+            end_date: analysis.requested_end,
+            horizon_sessions: surfaceHorizon,
+          }),
+        });
+        jobId = job.job_id;
+        surfaceJobId.current = jobId;
+        if (!active) {
+          await api(`/analyses/surface-jobs/${jobId}`, { method: "DELETE" }).catch(() => undefined);
+          return;
+        }
+        setSurfaceJob(job);
+        while (active && !terminalStatuses.has(job.status)) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+          if (!active) break;
+          job = await api<ForecastSurfaceJob>(`/analyses/surface-jobs/${jobId}`);
+          if (!active) break;
+          setSurfaceJob(job);
+        }
+        terminal = terminalStatuses.has(job.status);
+      } catch (requestError) {
+        if (active) setSurfaceError(requestError instanceof Error ? requestError.message : "Forecast surface computation failed");
+      }
+    };
+    void compute();
+    return () => {
+      active = false;
+      if (jobId && !terminal) {
+        void api(`/analyses/surface-jobs/${jobId}`, { method: "DELETE" }).catch(() => undefined);
+      }
+      if (surfaceJobId.current === jobId) surfaceJobId.current = null;
+    };
+  }, [analysis, selected, surfaceEnabled, surfaceHorizon]);
   const setStartDate = (value: string) => {
     const parsed = dateToDay(value);
     if (Number.isFinite(parsed)) {
-      setAnalysis(null);
+      invalidateAnalysis();
       setStartDay(Math.min(parsed, endDay - 1));
     }
   };
   const setEndDate = (value: string) => {
     const parsed = dateToDay(value);
     if (Number.isFinite(parsed)) {
-      setAnalysis(null);
+      invalidateAnalysis();
       setEndDay(Math.max(parsed, startDay + 1));
     }
   };
@@ -1303,7 +1446,7 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
     const span = endDay - startDay;
     const requestedShift = direction * shiftDays;
     const shiftedStart = Math.max(minDay, Math.min(maxDay - span, startDay + requestedShift));
-    setAnalysis(null);
+    invalidateAnalysis();
     setStartDay(shiftedStart);
     setEndDay(shiftedStart + span);
   };
@@ -1365,9 +1508,25 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
     </div>
     <div className="panel timeline-panel">
       <div className="timeline-dates"><label>{t("startDate")}<input type="date" value={dayToDate(startDay)} min={dayToDate(minDay)} max={dayToDate(endDay - 1)} onChange={(event) => setStartDate(event.target.value)} /></label><label>{t("endDate")}<input type="date" value={dayToDate(endDay)} min={dayToDate(startDay + 1)} max={dayToDate(maxDay)} onChange={(event) => setEndDate(event.target.value)} /></label></div>
-      <div className="dual-range" aria-label={t("rangeMetrics")}><input type="range" min={minDay} max={maxDay} value={startDay} onChange={(event) => { setAnalysis(null); setStartDay(Math.min(Number(event.target.value), endDay - 1)); }} /><input type="range" min={minDay} max={maxDay} value={endDay} onChange={(event) => { setAnalysis(null); setEndDay(Math.max(Number(event.target.value), startDay + 1)); }} /></div>
+      <div className="dual-range" aria-label={t("rangeMetrics")}><input type="range" min={minDay} max={maxDay} value={startDay} onChange={(event) => { invalidateAnalysis(); setStartDay(Math.min(Number(event.target.value), endDay - 1)); }} /><input type="range" min={minDay} max={maxDay} value={endDay} onChange={(event) => { invalidateAnalysis(); setEndDay(Math.max(Number(event.target.value), startDay + 1)); }} /></div>
       <div className="timeline-caption"><span>{dayToDate(minDay)}</span><strong>{dayToDate(startDay)} → {dayToDate(endDay)}</strong><span>{dayToDate(maxDay)}</span></div>
       {error && <div className="workspace-notice error">{error}</div>}
+    </div>
+    <div className="panel pipeline surface-panel">
+      <div className="panel-header"><div><h2 className="panel-title">{t("forecastSurface")}</h2><p className="panel-subtitle">{t("forecastSurfaceCopy")}</p></div><div className="surface-controls">
+        <div className="segments">{([10, 30, 90] as const).map((horizon) => <button key={horizon} className={`segment-button ${surfaceHorizon === horizon ? "active" : ""}`} onClick={() => { setSurfaceHorizon(horizon); setSurfaceJob(null); setSurfaceError(""); }}>{horizon}D</button>)}</div>
+        <label className="surface-toggle" title={t("autoSurfaceCopy")}><input type="checkbox" checked={surfaceEnabled} onChange={(event) => {
+          setSurfaceEnabled(event.target.checked);
+          setSurfaceJob(null);
+          setSurfaceError("");
+        }} /><span>{t("autoSurface")}</span></label>
+      </div></div>
+      {!surfaceEnabled && <div className="empty-state">{t("surfaceDisabled")}</div>}
+      {surfaceEnabled && (!analysis || !surfaceJob) && !surfaceError && <div className="surface-progress-card"><div><strong>{t("surfaceCalculating")}</strong><span>{t("surfaceContinueBrowsing")}</span></div><div className="surface-progress"><i style={{ width: analysis ? "2%" : "0%" }} /></div></div>}
+      {surfaceEnabled && surfaceJob && ["queued", "running"].includes(surfaceJob.status) && <div className="surface-progress-card" aria-live="polite"><div><strong>{t("surfaceCalculating")} · {Math.round(surfaceJob.progress)}%</strong><span>{t("surfaceContinueBrowsing")}</span></div><div className="surface-progress"><i style={{ width: `${Math.max(2, surfaceJob.progress)}%` }} /></div></div>}
+      {surfaceEnabled && surfaceJob?.status === "insufficient_data" && surfaceJob.result && <div className="empty-state"><strong>{t("surfaceInsufficient")}</strong><span className="mono">{surfaceJob.result.bar_count} / {surfaceJob.result.required_sessions} {t("sessions")}</span><small>{t("surfaceMinimum")}: {surfaceJob.result.minimum_analog_samples} analogs · {surfaceJob.result.minimum_surface_points} {t("surfacePoints")}</small></div>}
+      {surfaceEnabled && surfaceJob?.status === "complete" && surfaceJob.result && <><ForecastSurfaceChart result={surfaceJob.result} /><div className="surface-meta mono"><span>{surfaceJob.result.point_count} {t("surfacePoints")}</span><span>{t("samplingEvery")} {surfaceJob.result.sampling_interval_sessions ?? 1} {t("sessions")}</span><span>Cutoff {surfaceJob.result.data_cutoff}</span></div></>}
+      {surfaceEnabled && (surfaceError || surfaceJob?.status === "failed") && <div className="workspace-notice error">{surfaceError || surfaceJob?.error || t("surfaceFailed")}</div>}
     </div>
     {analysis && <>
       <div className="panel coverage-panel"><div><span>{t("requestedRange")}</span><strong className="mono">{analysis.requested_start} → {analysis.requested_end}</strong></div><div><span>{t("actualCoverage")}</span><strong className="mono">{analysis.actual_start} → {analysis.actual_end}</strong></div><div><span>{t("sessions")}</span><strong className="mono">{analysis.bar_count}</strong></div>{analysis.coverage_warnings.length > 0 && <p className="coverage-warning">{t("coverageGap")}</p>}</div>
@@ -1482,7 +1641,7 @@ function BacktestView({ backtests, run, running }: { backtests: Backtest[]; run:
   const latest = backtests[0];
   const result = latest?.result ?? latest;
   return <div className="page-section"><Header eyebrow={t("walkForward")} title={t("testWithoutInventing")} copy={t("testWithoutInventingCopy")}><select className="filter-select" value={horizon} onChange={(event) => setHorizon(Number(event.target.value))}><option value={10}>10 {t("sessions")}</option><option value={30}>30 {t("sessions")}</option><option value={90}>90 {t("sessions")}</option></select><button className="primary-button" disabled={running} onClick={() => void run(horizon)}>{running ? t("running") : t("runBacktest")}</button></Header>
-    {!latest ? <div className="panel empty-market"><h2>{t("noBacktestResults")}</h2><p>{t("backtestEmptyCopy")}</p></div> : <><div className="result-grid"><div className="result-card"><div className="result-label">{t("meanIc")}</div><div className="result-value mono">{result.mean_spearman_ic == null ? "—" : result.mean_spearman_ic.toFixed(3)}</div></div><div className="result-card"><div className="result-label">{t("spread")}</div><div className="result-value mono">{formatPercent(result.mean_top_bottom_spread)}</div></div><div className="result-card"><div className="result-label">{t("directionAccuracy")}</div><div className="result-value mono">{formatPercent(result.direction_accuracy)}</div></div><div className="result-card"><div className="result-label">{t("observations")}</div><div className="result-value mono">{result.observation_count}</div><div className="result-delta">{result.symbol_count} {t("symbols")}</div></div></div><div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("volatilitySurface")}</h2><p className="panel-subtitle">{t("volatilitySurfaceCopy")}</p></div>{result.volatility_surface && <span className="tiny-badge">{result.volatility_surface.lookback_sessions}D</span>}</div>{result.volatility_surface ? <VolatilitySurfaceChart surface={result.volatility_surface} /> : <div className="empty-state">{t("noVolatilitySurface")}</div>}</div><div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("methodLimits")}</h2><p className="panel-subtitle">{result.version}</p></div></div><div className="note-list">{result.warnings.map((warning, index) => <div className="research-note" key={warning}>{language === "zh" ? (index === 0 ? "結果未計入手續費、滑價、稅務、借券成本與存活者偏差修正。" : "這是研究診斷，不是投資建議或交易指令。") : warning}</div>)}</div></div></>}
+    {!latest ? <div className="panel empty-market"><h2>{t("noBacktestResults")}</h2><p>{t("backtestEmptyCopy")}</p></div> : <><div className="result-grid"><div className="result-card"><div className="result-label">{t("meanIc")}</div><div className="result-value mono">{result.mean_spearman_ic == null ? "—" : result.mean_spearman_ic.toFixed(3)}</div></div><div className="result-card"><div className="result-label">{t("spread")}</div><div className="result-value mono">{formatPercent(result.mean_top_bottom_spread)}</div></div><div className="result-card"><div className="result-label">{t("directionAccuracy")}</div><div className="result-value mono">{formatPercent(result.direction_accuracy)}</div></div><div className="result-card"><div className="result-label">{t("observations")}</div><div className="result-value mono">{result.observation_count}</div><div className="result-delta">{result.symbol_count} {t("symbols")}</div></div></div><div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("methodLimits")}</h2><p className="panel-subtitle">{result.version}</p></div></div><div className="note-list">{result.warnings.map((warning, index) => <div className="research-note" key={warning}>{language === "zh" ? (index === 0 ? "結果未計入手續費、滑價、稅務、借券成本與存活者偏差修正。" : "這是研究診斷，不是投資建議或交易指令。") : warning}</div>)}</div></div></>}
   </div>;
 }
 
@@ -1503,7 +1662,8 @@ function PortfolioView({
   const [shares, setShares] = useState("");
   const [averageCost, setAverageCost] = useState("");
   const [acquiredDate, setAcquiredDate] = useState("");
-  const [editing, setEditing] = useState<PortfolioHolding | null>(null);
+  const [editing, setEditing] = useState<{ holding: PortfolioHolding; lot: PortfolioLot } | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState<"save" | "delete" | "">("");
   const [error, setError] = useState("");
   const money = (value: number | null) => value == null
@@ -1521,14 +1681,28 @@ function PortfolioView({
     setAcquiredDate("");
     setEditing(null);
   };
-  const startEdit = (holding: PortfolioHolding) => {
-    setEditing(holding);
+  const dateTime = (value: string | null) => value
+    ? new Intl.DateTimeFormat(language === "zh" ? "zh-TW" : "en-US", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(value))
+    : t("neverUpdated");
+  const startEdit = (holding: PortfolioHolding, lot: PortfolioLot) => {
+    setEditing({ holding, lot });
     setAccount(holding.account_name);
     setSymbol(holding.symbol);
-    setShares(String(holding.shares));
-    setAverageCost(String(holding.average_cost));
-    setAcquiredDate(holding.acquired_date ?? "");
+    setShares(String(lot.shares));
+    setAverageCost(String(lot.unit_cost));
+    setAcquiredDate(lot.acquired_date ?? "");
     setError("");
+  };
+  const toggleExpanded = (holdingId: string) => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(holdingId)) next.delete(holdingId);
+      else next.add(holdingId);
+      return next;
+    });
   };
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1538,6 +1712,7 @@ function PortfolioView({
       const result = await api<PortfolioCenter>("/portfolio/holdings", {
         method: "POST",
         body: JSON.stringify({
+          lot_id: editing?.lot.lot_id ?? null,
           account_name: account.trim(),
           symbol: symbol.trim().toUpperCase(),
           shares: Number(shares),
@@ -1554,14 +1729,14 @@ function PortfolioView({
       setBusy("");
     }
   };
-  const remove = async (holding: PortfolioHolding) => {
+  const remove = async (lot: PortfolioLot) => {
     if (!window.confirm(t("confirmDeleteHolding"))) return;
     setBusy("delete");
     setError("");
     try {
-      const result = await api<PortfolioCenter>(`/portfolio/holdings/${holding.holding_id}`, { method: "DELETE" });
+      const result = await api<PortfolioCenter>(`/portfolio/holding-lots/${lot.lot_id}`, { method: "DELETE" });
       setCenter(result);
-      if (editing?.holding_id === holding.holding_id) resetForm();
+      if (editing?.lot.lot_id === lot.lot_id) resetForm();
       notify(t("holdingDeleted"));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : t("apiError"));
@@ -1575,7 +1750,7 @@ function PortfolioView({
     {error && <div className="workspace-notice error">{error}</div>}
     <div className="summary-grid portfolio-summary">
       <div className="summary-card featured"><div className="summary-card-label">{t("holdingCount")}</div><div className="summary-value mono">{center.summary.holding_count}</div><div className="summary-meta">{center.summary.account_count} {t("accountCount")}</div></div>
-      <div className="summary-card"><div className="summary-card-label">{t("costBasis")}</div><div className="summary-value mono">{money(center.summary.total_cost_basis)}</div><div className="summary-meta">{center.summary.holding_count} {t("holdingCount")}</div></div>
+      <div className="summary-card"><div className="summary-card-label">{t("costBasis")}</div><div className="summary-value mono">{money(center.summary.total_cost_basis)}</div><div className="summary-meta">{center.summary.lot_count} {t("lotCount")}</div></div>
       <div className="summary-card"><div className="summary-card-label">{t("marketValue")}</div><div className="summary-value mono">{money(center.summary.market_value)}</div><div className="summary-meta">{t("pricingCoverage")} {center.summary.priced_count}/{center.summary.holding_count}</div></div>
       <div className="summary-card"><div className="summary-card-label">{t("unrealizedPL")}</div><div className={`summary-value mono ${(center.summary.unrealized_pl ?? 0) >= 0 ? "positive-text" : "negative-text"}`}>{money(center.summary.unrealized_pl)}</div><div className="summary-meta">{formatPercent(center.summary.unrealized_percent)}</div></div>
     </div>
@@ -1592,9 +1767,41 @@ function PortfolioView({
         </form>
       </section>
       <section className="panel portfolio-table-panel">
-        <div className="panel-header"><div><h2 className="panel-title">{t("portfolio")}</h2><p className="panel-subtitle">{t("portfolioEyebrow")}</p></div><span className="tiny-badge">{center.items.length}</span></div>
-        {center.items.length ? <div className="table-wrap"><table className="data-table portfolio-table"><thead><tr><th>{t("accountName")}</th><th>{t("symbol")}</th><th>{t("sharesHeld")}</th><th>{t("averageCost")}</th><th>{t("latestStoredPrice")}</th><th>{t("marketValue")}</th><th>{t("unrealizedPL")}</th><th>{t("acquiredDate")}</th><th>{t("holdingSource")}</th><th /></tr></thead><tbody>
-          {center.items.map((holding) => <tr key={holding.holding_id}><td><strong>{holding.account_name}</strong></td><td><strong className="mono">{holding.symbol}</strong></td><td className="mono">{holding.shares.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td><td className="mono">{money(holding.average_cost)}</td><td className="mono">{holding.latest_price == null ? "—" : <>{money(holding.latest_price)}<small>{holding.price_date}</small></>}</td><td className="mono">{money(holding.market_value)}</td><td className={`mono ${(holding.unrealized_pl ?? 0) >= 0 ? "positive-text" : "negative-text"}`}>{money(holding.unrealized_pl)}<small>{formatPercent(holding.unrealized_percent)}</small></td><td className="mono">{holding.acquired_date ?? "—"}</td><td><span className="tiny-badge">{holding.source}</span></td><td><div className="holding-actions"><button className="table-action" onClick={() => startEdit(holding)}>{t("editHolding")}</button><button className="table-action danger" disabled={busy === "delete"} onClick={() => void remove(holding)}>{t("deleteHolding")}</button></div></td></tr>)}
+        <div className="panel-header"><div><h2 className="panel-title">{t("portfolio")}</h2><p className="panel-subtitle">{t("portfolioEyebrow")}</p></div><div className="portfolio-update-time"><span>{t("lastUpdatedAt")}</span><strong>{dateTime(center.summary.last_updated_at)}</strong></div></div>
+        {center.items.length ? <div className="table-wrap"><table className="data-table portfolio-table"><thead><tr><th>{t("accountName")}</th><th>{t("symbol")}</th><th>{t("sharesHeld")}</th><th>{t("averageCost")}</th><th>{t("latestStoredPrice")}</th><th>{t("marketValue")}</th><th>{t("unrealizedPL")}</th><th>{t("lotCount")}</th><th>{t("holdingSource")}</th><th /></tr></thead><tbody>
+          {center.items.map((holding) => {
+            const isExpanded = expanded.has(holding.holding_id);
+            return <Fragment key={holding.holding_id}>
+              <tr className={`portfolio-summary-row ${isExpanded ? "expanded" : ""}`} onClick={() => toggleExpanded(holding.holding_id)}>
+                <td><div className="portfolio-account-cell"><button className="holding-expander" aria-label={isExpanded ? t("collapseHolding") : t("expandHolding")} aria-expanded={isExpanded} onClick={(event) => { event.stopPropagation(); toggleExpanded(holding.holding_id); }}>{isExpanded ? "−" : "+"}</button><strong>{holding.account_name}</strong></div></td>
+                <td><strong className="mono">{holding.symbol}</strong></td>
+                <td className="mono">{holding.shares.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+                <td className="mono">{money(holding.average_cost)}</td>
+                <td className="mono">{holding.latest_price == null ? "—" : <>{money(holding.latest_price)}<small>{holding.price_date}</small></>}</td>
+                <td className="mono">{money(holding.market_value)}</td>
+                <td className={`mono ${(holding.unrealized_pl ?? 0) >= 0 ? "positive-text" : "negative-text"}`}>{money(holding.unrealized_pl)}<small>{formatPercent(holding.unrealized_percent)}</small></td>
+                <td><span className="lot-count-badge">{holding.lots.length}</span></td>
+                <td><span className="tiny-badge">{holding.source}</span></td>
+                <td><span className="row-expand-copy">{isExpanded ? t("collapseHolding") : t("expandHolding")}</span></td>
+              </tr>
+              {isExpanded && <tr className="portfolio-detail-row"><td colSpan={10}>
+                <div className="holding-detail">
+                  <div className="holding-detail-title"><strong>{holding.symbol} · {t("holdingLots")}</strong><span>{holding.lots.length} {t("lotCount")}</span></div>
+                  <div className="holding-lot-list">
+                    {holding.lots.map((lot, index) => <div className="holding-lot" key={lot.lot_id}>
+                      <div className="lot-number mono">#{index + 1}</div>
+                      <div><span>{t("acquiredDate")}</span><strong className="mono">{lot.acquired_date ?? "—"}</strong></div>
+                      <div><span>{t("sharesHeld")}</span><strong className="mono">{lot.shares.toLocaleString(undefined, { maximumFractionDigits: 6 })}</strong></div>
+                      <div><span>{t("unitCost")}</span><strong className="mono">{money(lot.unit_cost)}</strong></div>
+                      <div><span>{t("costBasis")}</span><strong className="mono">{money(lot.cost_basis)}</strong></div>
+                      <div><span>{t("enteredAt")}</span><strong>{dateTime(lot.created_at)}</strong></div>
+                      <div className="holding-actions"><button className="table-action" onClick={(event) => { event.stopPropagation(); startEdit(holding, lot); }}>{t("editHolding")}</button><button className="table-action danger" disabled={busy === "delete"} onClick={(event) => { event.stopPropagation(); void remove(lot); }}>{t("deleteHolding")}</button></div>
+                    </div>)}
+                  </div>
+                </div>
+              </td></tr>}
+            </Fragment>;
+          })}
         </tbody></table></div> : <div className="empty-market portfolio-empty"><h2>{t("noHoldings")}</h2><p>{t("noHoldingsCopy")}</p></div>}
       </section>
     </div>
@@ -1676,7 +1883,7 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
       <main className="main">{loading && <div className="workspace-notice">{t("loading")}</div>}{error && <div className="workspace-notice error"><span>{t("apiError")} {error}</span><button className="secondary-button" onClick={() => void load()}>{t("retry")}</button></div>}
         {!loading && !error && view === "overview" && overview && <div className="page-section"><Header eyebrow={t("realStoredData")} title={t("researchStored")} copy={t("researchStoredCopy")} />{overview.market.bar_count === 0 ? <EmptyMarket onOpenData={() => setView("data")} /> : <><SummaryCards overview={overview} /><div className="content-grid"><div className="panel"><div className="panel-header"><div><h2 className="panel-title">{t("storedUniverse")}</h2><p className="panel-subtitle">{t("realCrossSection")}</p></div><button className="secondary-button" onClick={() => setView("scanner")}>{t("viewScanner")}</button></div><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div></>}</div>}
         {!loading && !error && view === "scanner" && <div className="page-section"><Header eyebrow="Massive EOD" title={t("compareReal")} copy={t("compareRealCopy")}><div className="segments">{(["10D", "30D", "90D"] as Horizon[]).map((item) => <button key={item} className={`segment-button ${horizon === item ? "active" : ""}`} onClick={() => setHorizon(item)}>{item}</button>)}</div></Header>{!stocks.length ? <EmptyMarket onOpenData={() => setView("data")} /> : <div className="content-grid"><div className="panel"><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div>}</div>}
-        {!loading && !error && view === "metrics" && <MetricsView stocks={stocks} catalog={metricCatalog} />}
+        {!loading && !error && <div className={view === "metrics" ? "" : "view-hidden"} aria-hidden={view !== "metrics"}><MetricsView stocks={stocks} catalog={metricCatalog} /></div>}
         {!loading && !error && view === "portfolio" && portfolioCenter && <PortfolioView center={portfolioCenter} setCenter={setPortfolioCenter} onOpenData={() => setView("data")} notify={setToast} />}
         {!loading && !error && view === "events" && <EventsView center={eventCenter} confidence={confidenceCenter} stocks={stocks} reload={load} onOpenSymbol={(symbol) => { const stock = stocks.find((item) => item.symbol === symbol); if (stock) { setActiveStock(stock); setSearch(symbol); setView("scanner"); } }} />}
         {!loading && !error && view === "backtest" && <BacktestView backtests={backtests} run={runBacktest} running={running} />}

@@ -116,9 +116,28 @@ Completed forecasts expose 10%, 50%, and 90% return and price levels. When
 stored bars exist after a historical analysis cutoff, only the forecast
 validation section reads them and displays the realized target plus the five
 sessions before and after it. Those future bars never enter the metric
-snapshot, selected-range series, or analog generation. Walk-forward results
-also include a three-dimensional surface of annualized 20-session realized
-volatility by evaluation date and symbol.
+snapshot, selected-range series, or analog generation.
+
+Range metrics also contains an optional single-symbol 3D forecast history
+view. Its axes are target time, data source (actual, P10, P50, and P90), and
+price. For every target, the 10D, 30D, or 90D forecast is rebuilt from a prefix
+ending exactly that many trading sessions earlier. At least 30 completed
+analogs and five validation targets are required, which means selected ranges
+need at least 114, 154, or 274 sessions respectively. The browser submits this
+as a cancellable background job, polls progress while other screens remain
+usable, cancels stale work after an input change, and caps the displayed
+surface at 80 evenly spaced validation targets. The Backtest screen remains
+focused on cross-sectional walk-forward diagnostics and no longer shows an
+all-symbol volatility surface.
+
+## Portfolio records
+
+The local portfolio screen records manual holdings only; it cannot place or
+route trades. Each entry is stored as a separate lot, while matching
+account-symbol pairs display aggregate shares and weighted average cost.
+Expanding an aggregate exposes the source lot, acquisition date, entry time,
+and edit/delete controls. Valuations use only stored DuckDB prices; missing
+prices remain blank and are never replaced by defaults.
 
 ## Event and confidence research
 

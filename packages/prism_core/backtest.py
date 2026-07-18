@@ -107,7 +107,6 @@ def walk_forward_backtest(
         raise ValueError("Horizon must be 10, 30, or 90 sessions")
     observations: list[Observation] = []
     per_date: dict[str, list[Observation]] = {}
-    volatility_by_symbol: dict[str, dict[str, float]] = {}
 
     for symbol, bars in histories.items():
         ordered = sorted(bars, key=lambda bar: bar.timestamp)
@@ -122,9 +121,6 @@ def walk_forward_backtest(
             observations.append(observation)
             date_key = ordered[index].timestamp.date().isoformat()
             per_date.setdefault(date_key, []).append(observation)
-            volatility = _realized_volatility(ordered, index)
-            if volatility is not None:
-                volatility_by_symbol.setdefault(symbol, {})[date_key] = volatility
 
     daily_ics: list[float] = []
     spreads: list[float] = []
@@ -148,28 +144,6 @@ def walk_forward_backtest(
             directional_hits += int((item.score >= 0) == (item.forward_return >= 0))
             direction_count += 1
 
-    surface_dates = sorted(
-        {
-            date_key
-            for values in volatility_by_symbol.values()
-            for date_key in values
-        }
-    )[-80:]
-    surface_symbols = sorted(volatility_by_symbol)
-    volatility_surface = {
-        "dates": surface_dates,
-        "symbols": surface_symbols,
-        "values": [
-            [
-                volatility_by_symbol[symbol].get(date_key)
-                for date_key in surface_dates
-            ]
-            for symbol in surface_symbols
-        ],
-        "unit": "annualized_decimal",
-        "lookback_sessions": 20,
-    }
-
     return {
         "status": "complete" if observations else "insufficient_data",
         "version": BACKTEST_VERSION,
@@ -183,7 +157,6 @@ def walk_forward_backtest(
         "direction_accuracy": (
             directional_hits / direction_count if direction_count else None
         ),
-        "volatility_surface": volatility_surface,
         "warnings": [
             "Results exclude fees, slippage, taxes, borrow costs, and survivorship corrections.",
             "This is a research diagnostic, not a recommendation or trading instruction.",

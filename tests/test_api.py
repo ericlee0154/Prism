@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -155,9 +156,40 @@ def test_portfolio_uses_only_stored_market_prices(client: TestClient) -> None:
     )
     assert updated.status_code == 201
     assert len(updated.json()["items"]) == 1
-    assert updated.json()["items"][0]["shares"] == 12
+    combined = updated.json()["items"][0]
+    assert combined["shares"] == 22
+    assert combined["average_cost"] == pytest.approx(
+        (10 * 150 + 12 * 160) / 22
+    )
+    assert len(combined["lots"]) == 2
 
-    holding_id = updated.json()["items"][0]["holding_id"]
+    second_lot = combined["lots"][1]
+    edited = client.post(
+        "/api/v1/portfolio/holdings",
+        json={
+            "lot_id": second_lot["lot_id"],
+            "account_name": "Local account",
+            "symbol": "AAPL",
+            "shares": 15,
+            "average_cost": 155,
+        },
+    )
+    assert edited.status_code == 201
+    assert edited.json()["items"][0]["shares"] == 25
+    assert len(edited.json()["items"][0]["lots"]) == 2
+    assert edited.json()["summary"]["lot_count"] == 2
+    assert edited.json()["summary"]["last_updated_at"] is not None
+
+    first_lot = edited.json()["items"][0]["lots"][0]
+    lot_deleted = client.delete(
+        f"/api/v1/portfolio/holding-lots/{first_lot['lot_id']}"
+    )
+    assert lot_deleted.status_code == 200
+    remaining = lot_deleted.json()["items"][0]
+    assert remaining["shares"] == 15
+    assert len(remaining["lots"]) == 1
+
+    holding_id = remaining["holding_id"]
     deleted = client.delete(f"/api/v1/portfolio/holdings/{holding_id}")
     assert deleted.status_code == 200
     assert deleted.json()["items"] == []
@@ -217,11 +249,7 @@ def test_scanner_is_derived_from_stored_bars(client: TestClient) -> None:
         json={"horizon_sessions": 10},
     )
     assert backtest.status_code == 201
-    surface = backtest.json()["volatility_surface"]
-    assert surface["symbols"] == ["REAL"]
-    assert surface["dates"]
-    assert len(surface["values"]) == 1
-    assert len(surface["values"][0]) == len(surface["dates"])
+    assert "volatility_surface" not in backtest.json()
 
 
 def test_forecast_actuals_are_the_only_out_of_range_analysis_data(
@@ -276,6 +304,43 @@ def test_forecast_actuals_are_the_only_out_of_range_analysis_data(
     )
     assert all(
         item["date"] > selected_end for item in forecast_10["actual_window"]
+    )
+
+    submitted = client.post(
+        "/api/v1/analyses/surface-jobs",
+        json={
+            "symbol": "HIST",
+            "start_date": bars[0].timestamp.date().isoformat(),
+            "end_date": selected_end,
+            "horizon_sessions": 10,
+        },
+    )
+    assert submitted.status_code == 202
+    job = submitted.json()
+    for _ in range(100):
+        job = client.get(
+            f"/api/v1/analyses/surface-jobs/{job['job_id']}"
+        ).json()
+        if job["status"] in {
+            "complete",
+            "insufficient_data",
+            "cancelled",
+            "failed",
+        }:
+            break
+        time.sleep(0.005)
+    assert job["status"] == "complete"
+    surface = job["result"]
+    assert surface["bar_count"] == 120
+    assert surface["selected_end"] == selected_end
+    assert surface["point_count"] == 11
+    assert max(point["actual_price"] for point in surface["points"]) < 1_000
+    assert all(
+        (
+            datetime.fromisoformat(point["target_date"])
+            - datetime.fromisoformat(point["origin_date"])
+        ).days >= 10
+        for point in surface["points"]
     )
 
     assert body["forecasts"]["30"]["actual_status"] == "complete"

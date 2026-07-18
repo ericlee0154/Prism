@@ -18,7 +18,14 @@ test("builds the local real-data Prism research workspace", async () => {
   assert.match(app, /Recalculates automatically after changes/);
   assert.match(app, /50% median/);
   assert.match(app, /Historical actual/);
-  assert.match(app, /3D volatility surface/);
+  assert.match(app, /3D forecast history validation/);
+  assert.match(app, /Recompute with range/);
+  assert.match(app, /Historical actual/);
+  assert.match(app, /10% forecast/);
+  assert.match(app, /50% forecast/);
+  assert.match(app, /90% forecast/);
+  assert.doesNotMatch(app, /3D volatility surface/);
+  assert.match(app, /Holding details/);
   assert.match(app, /World & company events/);
   assert.match(app, /Institution confidence · weekly/);
   assert.match(app, /Company long-term confidence · monthly/);

@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from packages.prism_core.ai_events import OpenAIQuotaExceeded
+from packages.prism_core.forecast_surface import ForecastSurfaceJobManager
 from packages.prism_core.repository import PrismRepository
 from packages.prism_core.service import PrismService
 
@@ -38,7 +39,9 @@ async def lifespan(application: FastAPI):
     service = PrismService(repository)
     application.state.repository = repository
     application.state.service = service
+    application.state.forecast_surface_jobs = ForecastSurfaceJobManager()
     yield
+    await application.state.forecast_surface_jobs.shutdown()
     repository.close()
 
 
@@ -87,6 +90,13 @@ class AnalysisRequest(BaseModel):
     end_date: date
 
 
+class ForecastSurfaceRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=20)
+    start_date: date
+    end_date: date
+    horizon_sessions: Literal[10, 30, 90] = 10
+
+
 class WorldEventRefreshRequest(BaseModel):
     lookback_days: int = Field(default=7, ge=1, le=90)
     lookahead_days: int = Field(default=30, ge=1, le=180)
@@ -107,6 +117,7 @@ class ConfidenceRefreshRequest(BaseModel):
 
 
 class PortfolioHoldingRequest(BaseModel):
+    lot_id: str | None = None
     account_name: str = Field(min_length=1, max_length=80)
     symbol: str = Field(min_length=1, max_length=20)
     shares: float = Field(gt=0)
@@ -184,6 +195,7 @@ def upsert_portfolio_holding(
             shares=request.shares,
             average_cost=request.average_cost,
             acquired_date=request.acquired_date,
+            lot_id=request.lot_id,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -193,6 +205,14 @@ def upsert_portfolio_holding(
 def delete_portfolio_holding(holding_id: str, service: Service) -> dict:
     try:
         return service.delete_portfolio_holding(holding_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.delete("/api/v1/portfolio/holding-lots/{lot_id}")
+def delete_portfolio_holding_lot(lot_id: str, service: Service) -> dict:
+    try:
+        return service.delete_portfolio_holding_lot(lot_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -264,6 +284,53 @@ def create_analysis(request: AnalysisRequest, service: Service) -> dict:
 @app.get("/api/v1/analyses")
 def list_analyses(service: Service) -> dict:
     return {"items": service.repository.list_range_analyses()}
+
+
+@app.post("/api/v1/analyses/surface-jobs", status_code=202)
+async def create_forecast_surface_job(
+    request: ForecastSurfaceRequest,
+    service: Service,
+) -> dict:
+    if request.start_date >= request.end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Start date must precede end date",
+        )
+    start = datetime.combine(request.start_date, datetime.min.time(), tzinfo=UTC)
+    end = datetime.combine(request.end_date, datetime.max.time(), tzinfo=UTC)
+    bars = service.repository.list_bars(
+        request.symbol.upper(),
+        start=start,
+        end=end,
+    )
+    if not bars:
+        raise HTTPException(
+            status_code=400,
+            detail="No stored bars exist in the requested range",
+        )
+    return app.state.forecast_surface_jobs.submit(
+        symbol=request.symbol,
+        start_date=request.start_date.isoformat(),
+        end_date=request.end_date.isoformat(),
+        horizon_sessions=request.horizon_sessions,
+        bars=bars,
+    )
+
+
+@app.get("/api/v1/analyses/surface-jobs/{job_id}")
+async def get_forecast_surface_job(job_id: str) -> dict:
+    try:
+        return app.state.forecast_surface_jobs.get(job_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.delete("/api/v1/analyses/surface-jobs/{job_id}")
+async def cancel_forecast_surface_job(job_id: str) -> dict:
+    try:
+        return app.state.forecast_surface_jobs.cancel(job_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.get("/api/v1/events")

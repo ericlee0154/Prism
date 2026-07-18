@@ -1230,6 +1230,7 @@ class PrismService:
 
     def portfolio_center(self) -> dict:
         holdings = self.repository.list_portfolio_holdings()
+        market_summary = self.repository.market_summary()
         priced_cost_basis = 0.0
         market_value = 0.0
         items: list[dict[str, Any]] = []
@@ -1271,10 +1272,24 @@ class PrismService:
             )
         total_cost_basis = sum(item["cost_basis"] for item in items)
         priced_count = sum(item["latest_price"] is not None for item in items)
+        holdings_updated_at = max(
+            (item["updated_at"] for item in items),
+            default=None,
+            key=datetime.fromisoformat,
+        )
+        update_candidates = [
+            value
+            for value in (
+                holdings_updated_at,
+                market_summary["last_synced_at"],
+            )
+            if value is not None
+        ]
         return {
             "items": items,
             "summary": {
                 "holding_count": len(items),
+                "lot_count": sum(len(item["lots"]) for item in items),
                 "account_count": len(
                     {item["account_name"] for item in items}
                 ),
@@ -1292,6 +1307,13 @@ class PrismService:
                     if priced_cost_basis > 0
                     else None
                 ),
+                "holdings_updated_at": holdings_updated_at,
+                "market_synced_at": market_summary["last_synced_at"],
+                "last_updated_at": max(
+                    update_candidates,
+                    default=None,
+                    key=datetime.fromisoformat,
+                ),
             },
         }
 
@@ -1303,6 +1325,7 @@ class PrismService:
         shares: float,
         average_cost: float,
         acquired_date: date | None,
+        lot_id: str | None = None,
     ) -> dict:
         account = account_name.strip()
         ticker = symbol.strip().upper()
@@ -1321,6 +1344,7 @@ class PrismService:
             average_cost=average_cost,
             acquired_date=acquired_date.isoformat() if acquired_date else None,
             source="manual",
+            lot_id=lot_id,
         )
         center = self.portfolio_center()
         return {
@@ -1331,6 +1355,11 @@ class PrismService:
     def delete_portfolio_holding(self, holding_id: str) -> dict:
         if not self.repository.delete_portfolio_holding(holding_id):
             raise ValueError("Holding not found")
+        return self.portfolio_center()
+
+    def delete_portfolio_holding_lot(self, lot_id: str) -> dict:
+        if not self.repository.delete_portfolio_holding_lot(lot_id):
+            raise ValueError("Holding lot not found")
         return self.portfolio_center()
 
 

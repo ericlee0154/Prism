@@ -264,6 +264,36 @@ class PrismRepository:
             )
             """
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_holding_lots (
+                lot_id VARCHAR PRIMARY KEY,
+                holding_id VARCHAR NOT NULL,
+                shares DOUBLE NOT NULL,
+                unit_cost DOUBLE NOT NULL,
+                acquired_date DATE,
+                source VARCHAR NOT NULL,
+                source_reference VARCHAR,
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+            """
+        )
+        # Holdings created before lot-level tracking are preserved as one detail
+        # row. Re-running initialization is safe because lot_id is deterministic.
+        self.connection.execute(
+            """
+            INSERT INTO portfolio_holding_lots
+            SELECT holding_id, holding_id, shares, average_cost, acquired_date,
+                   source, source_reference, created_at, updated_at
+            FROM portfolio_holdings AS holding
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM portfolio_holding_lots AS lot
+                WHERE lot.holding_id = holding.holding_id
+            )
+            """
+        )
         # Remove records created by the retired deterministic demo provider.
         # Real provider failures must leave the workspace empty or stale, never
         # silently repopulate it with fixtures.
@@ -1153,26 +1183,33 @@ class PrismRepository:
         acquired_date: str | None,
         source: str,
         source_reference: str | None = None,
+        lot_id: str | None = None,
     ) -> str:
         account = account_name.strip()
         ticker = symbol.strip().upper()
-        existing = self.connection.execute(
-            """
-            SELECT holding_id
-            FROM portfolio_holdings
-            WHERE account_name = ? AND symbol = ?
-            """,
-            [account, ticker],
-        ).fetchone()
         now = datetime.now().astimezone()
-        if existing:
-            holding_id = str(existing[0])
+        if lot_id:
+            existing_lot = self.connection.execute(
+                """
+                SELECT lot.holding_id
+                FROM portfolio_holding_lots AS lot
+                JOIN portfolio_holdings AS holding
+                  ON holding.holding_id = lot.holding_id
+                WHERE lot.lot_id = ?
+                  AND holding.account_name = ?
+                  AND holding.symbol = ?
+                """,
+                [lot_id, account, ticker],
+            ).fetchone()
+            if not existing_lot:
+                raise ValueError("Holding lot not found")
+            holding_id = str(existing_lot[0])
             self.connection.execute(
                 """
-                UPDATE portfolio_holdings
-                SET shares = ?, average_cost = ?, acquired_date = ?, source = ?,
+                UPDATE portfolio_holding_lots
+                SET shares = ?, unit_cost = ?, acquired_date = ?, source = ?,
                     source_reference = ?, updated_at = ?
-                WHERE holding_id = ?
+                WHERE lot_id = ?
                 """,
                 [
                     shares,
@@ -1181,20 +1218,51 @@ class PrismRepository:
                     source,
                     source_reference,
                     now,
-                    holding_id,
+                    lot_id,
                 ],
             )
+            self._refresh_portfolio_holding(holding_id, now)
             return holding_id
-        holding_id = str(uuid4())
+
+        existing = self.connection.execute(
+            """
+            SELECT holding_id
+            FROM portfolio_holdings
+            WHERE account_name = ? AND symbol = ?
+            """,
+            [account, ticker],
+        ).fetchone()
+        if existing:
+            holding_id = str(existing[0])
+        else:
+            holding_id = str(uuid4())
+            self.connection.execute(
+                """
+                INSERT INTO portfolio_holdings
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    holding_id,
+                    account,
+                    ticker,
+                    shares,
+                    average_cost,
+                    acquired_date,
+                    source,
+                    source_reference,
+                    now,
+                    now,
+                ],
+            )
+        new_lot_id = str(uuid4())
         self.connection.execute(
             """
-            INSERT INTO portfolio_holdings
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO portfolio_holding_lots
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
+                new_lot_id,
                 holding_id,
-                account,
-                ticker,
                 shares,
                 average_cost,
                 acquired_date,
@@ -1204,7 +1272,44 @@ class PrismRepository:
                 now,
             ],
         )
+        self._refresh_portfolio_holding(holding_id, now)
         return holding_id
+
+    def _refresh_portfolio_holding(
+        self,
+        holding_id: str,
+        updated_at: datetime,
+    ) -> None:
+        aggregate = self.connection.execute(
+            """
+            SELECT SUM(shares),
+                   SUM(shares * unit_cost) / NULLIF(SUM(shares), 0),
+                   MIN(acquired_date)
+            FROM portfolio_holding_lots
+            WHERE holding_id = ?
+            """,
+            [holding_id],
+        ).fetchone()
+        if not aggregate or aggregate[0] is None:
+            self.connection.execute(
+                "DELETE FROM portfolio_holdings WHERE holding_id = ?",
+                [holding_id],
+            )
+            return
+        self.connection.execute(
+            """
+            UPDATE portfolio_holdings
+            SET shares = ?, average_cost = ?, acquired_date = ?, updated_at = ?
+            WHERE holding_id = ?
+            """,
+            [
+                float(aggregate[0]),
+                float(aggregate[1]),
+                aggregate[2],
+                updated_at,
+                holding_id,
+            ],
+        )
 
     @_serialized
     def list_portfolio_holdings(self) -> list[dict[str, Any]]:
@@ -1216,6 +1321,30 @@ class PrismRepository:
             ORDER BY account_name, symbol
             """
         ).fetchall()
+        lot_rows = self.connection.execute(
+            """
+            SELECT lot_id, holding_id, shares, unit_cost, acquired_date, source,
+                   source_reference, created_at, updated_at
+            FROM portfolio_holding_lots
+            ORDER BY acquired_date NULLS LAST, created_at, lot_id
+            """
+        ).fetchall()
+        lots_by_holding: dict[str, list[dict[str, Any]]] = {}
+        for row in lot_rows:
+            lots_by_holding.setdefault(str(row[1]), []).append(
+                {
+                    "lot_id": row[0],
+                    "holding_id": row[1],
+                    "shares": float(row[2]),
+                    "unit_cost": float(row[3]),
+                    "cost_basis": float(row[2]) * float(row[3]),
+                    "acquired_date": row[4].isoformat() if row[4] else None,
+                    "source": row[5],
+                    "source_reference": row[6],
+                    "created_at": row[7].isoformat(),
+                    "updated_at": row[8].isoformat(),
+                }
+            )
         return [
             {
                 "holding_id": row[0],
@@ -1228,6 +1357,7 @@ class PrismRepository:
                 "source_reference": row[7],
                 "created_at": row[8].isoformat(),
                 "updated_at": row[9].isoformat(),
+                "lots": lots_by_holding.get(str(row[0]), []),
             }
             for row in rows
         ]
@@ -1241,8 +1371,35 @@ class PrismRepository:
         if not exists:
             return False
         self.connection.execute(
+            "DELETE FROM portfolio_holding_lots WHERE holding_id = ?",
+            [holding_id],
+        )
+        self.connection.execute(
             "DELETE FROM portfolio_holdings WHERE holding_id = ?",
             [holding_id],
+        )
+        return True
+
+    @_serialized
+    def delete_portfolio_holding_lot(self, lot_id: str) -> bool:
+        existing = self.connection.execute(
+            """
+            SELECT holding_id
+            FROM portfolio_holding_lots
+            WHERE lot_id = ?
+            """,
+            [lot_id],
+        ).fetchone()
+        if not existing:
+            return False
+        holding_id = str(existing[0])
+        self.connection.execute(
+            "DELETE FROM portfolio_holding_lots WHERE lot_id = ?",
+            [lot_id],
+        )
+        self._refresh_portfolio_holding(
+            holding_id,
+            datetime.now().astimezone(),
         )
         return True
 
