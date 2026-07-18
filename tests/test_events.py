@@ -221,6 +221,8 @@ def test_codex_cli_provider_returns_schema_bound_grounded_output(
     assert "read-only" in command
     assert "--ephemeral" in command
     assert "--output-schema" in command
+    model_index = command.index("--model")
+    assert command[model_index + 1] == "gpt-5.6-sol"
     assert captured["environment"].get("MASSIVE_API_KEY") is None
     assert result.response_id == "thread_test"
     assert result.usage == {"total_tokens": 123}
@@ -262,6 +264,7 @@ def test_codex_cli_provider_uses_safe_default_for_invalid_timeout(
         authenticated=True,
     )
     assert provider.timeout_seconds == 300
+    assert provider.model == "gpt-5.6-sol"
 
 
 def test_company_event_lifecycle_connects_forecast_and_market_reaction(

@@ -30,6 +30,7 @@ cp .env.example .env
 ```dotenv
 MASSIVE_API_KEY=你的金鑰
 PRISM_AI_PROVIDER=codex_cli
+PRISM_CODEX_MODEL=gpt-5.6-sol
 PRISM_CODEX_TIMEOUT_SECONDS=300
 PRISM_DATABASE_PATH=./data/prism.duckdb
 ```
@@ -43,6 +44,10 @@ codex login status
 若尚未登入就執行 `codex login`。Codex CLI 未安裝、未登入或額度用完時，
 世界事件、公司事件與信心研究會保持空白；不影響 Massive 市場日線、
 metrics 與回測。
+
+Prism 預設明確固定使用 `gpt-5.6-sol`，避免 Codex 推薦模型改變時讓
+研究結果無意間換模型。只有刻意比較模型時才使用
+`PRISM_CODEX_MODEL` 覆寫。
 
 啟動本機 API 與 Web：
 

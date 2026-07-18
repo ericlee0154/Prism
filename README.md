@@ -40,6 +40,9 @@ React / Vinext UI (local browser)
 The Massive key is read only by FastAPI from the local process environment.
 It is never sent to the browser and must not use a `NEXT_PUBLIC_*` name.
 AI research uses the locally installed Codex CLI and its cached ChatGPT login.
+Prism explicitly pins `gpt-5.6-sol` so research runs do not change when
+Codex's recommended model changes. Use `PRISM_CODEX_MODEL` only when
+intentionally comparing models.
 
 ## Requirements
 
@@ -60,6 +63,7 @@ Set the key in the ignored `.env`:
 ```dotenv
 MASSIVE_API_KEY=your-key
 PRISM_AI_PROVIDER=codex_cli
+PRISM_CODEX_MODEL=gpt-5.6-sol
 PRISM_CODEX_TIMEOUT_SECONDS=300
 PRISM_DATABASE_PATH=./data/prism.duckdb
 ```

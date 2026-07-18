@@ -6,7 +6,9 @@ The local ChatGPT-authenticated Codex CLI performs source discovery, structured
 extraction, and narrative summarization. It never supplies prices or market
 reactions. Prism computes those values from locally stored Massive bars. Codex
 runs with `--search`, `--ephemeral`, a read-only sandbox, no interactive
-approvals, and a Pydantic-generated JSON Schema.
+approvals, and a Pydantic-generated JSON Schema. Prism passes
+`--model gpt-5.6-sol` by default rather than relying on a mutable recommended
+model; `PRISM_CODEX_MODEL` is the explicit experiment override.
 
 The CLI runs in an isolated temporary directory. FastAPI passes only the
 research prompt and output schema; the child environment excludes

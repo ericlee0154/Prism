@@ -26,6 +26,7 @@ from .ai_events import (
 
 
 DEFAULT_CODEX_TIMEOUT_SECONDS = 300
+DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
 CODEX_APP_BINARY = Path("/Applications/ChatGPT.app/Contents/Resources/codex")
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -61,9 +62,11 @@ class CodexCliEventResearchProvider(OpenAIEventResearchProvider):
     ) -> None:
         self.binary = binary or _find_codex_binary()
         self.requested_model = (
-            model or os.getenv("PRISM_CODEX_MODEL", "").strip() or None
+            model
+            or os.getenv("PRISM_CODEX_MODEL", "").strip()
+            or DEFAULT_CODEX_MODEL
         )
-        self.model = self.requested_model or "codex-cli-default"
+        self.model = self.requested_model
         configured_timeout = timeout_seconds or _configured_timeout_seconds(
             os.getenv("PRISM_CODEX_TIMEOUT_SECONDS", "")
         )
@@ -171,8 +174,7 @@ class CodexCliEventResearchProvider(OpenAIEventResearchProvider):
                 "--output-last-message",
                 str(output_path),
             ]
-            if self.requested_model:
-                command.extend(["--model", self.requested_model])
+            command.extend(["--model", self.requested_model])
             command.append("-")
             result = self.executor(
                 command,
