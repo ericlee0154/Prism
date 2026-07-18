@@ -8,7 +8,7 @@ from typing import Literal
 from .backtest import BACKTEST_VERSION, walk_forward_backtest
 from .forecast import historical_analog_forecast
 from .metrics import CATALOG, METRIC_VERSION, compute_price_metrics
-from .providers.massive import MassiveMarketDataProvider
+from .providers.massive import MassiveMarketDataProvider, MassiveQuotaExceeded
 from .repository import PrismRepository
 
 def _percentile(values: list[float], value: float) -> float:
@@ -86,10 +86,15 @@ class PrismService:
         sync_id = self.repository.begin_sync(self.provider.name, cleaned)
         rows_written = 0
         failures: list[dict[str, str]] = []
-        for symbol in cleaned:
+        not_attempted: list[str] = []
+        for index, symbol in enumerate(cleaned):
             try:
                 bars = self.provider.bars(symbol, start, end)
                 rows_written += self.repository.upsert_bars(bars)
+            except MassiveQuotaExceeded as error:
+                failures.append({"symbol": symbol, "error": str(error)})
+                not_attempted = cleaned[index + 1 :]
+                break
             except Exception as error:
                 failures.append({"symbol": symbol, "error": str(error)})
 
@@ -125,6 +130,7 @@ class PrismService:
             "symbols": cleaned,
             "rows_written": rows_written,
             "failures": failures,
+            "not_attempted": not_attempted,
             "requested_start": start.date().isoformat(),
             "requested_end": end.date().isoformat(),
             "coverage": coverage,

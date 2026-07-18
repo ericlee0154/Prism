@@ -4,7 +4,10 @@ import pytest
 
 from packages.prism_core.metrics import compute_price_metrics
 from packages.prism_core.models import Bar
-from packages.prism_core.providers.massive import MassiveMarketDataProvider
+from packages.prism_core.providers.massive import (
+    MassiveMarketDataProvider,
+    MassiveQuotaExceeded,
+)
 import httpx
 
 
@@ -74,3 +77,25 @@ def test_massive_adapter_maps_daily_aggregates_without_leaking_key() -> None:
     assert bars[0].symbol == "AAPL"
     assert bars[0].close == 102.0
     assert bars[0].available_at.hour == 21
+
+
+def test_massive_adapter_stops_immediately_on_quota() -> None:
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(429, headers={"Retry-After": "60"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = MassiveMarketDataProvider(api_key="test-secret", client=client)
+
+    with pytest.raises(MassiveQuotaExceeded, match="sync stopped"):
+        provider.bars(
+            "GOOG",
+            datetime(2024, 1, 1, tzinfo=UTC),
+            datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+    client.close()
+    assert request_count == 1

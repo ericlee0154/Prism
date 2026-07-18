@@ -14,6 +14,8 @@ execution path.
 - Runtime demo data does not exist.
 - An empty database produces an empty UI.
 - Provider failures never substitute sample prices, scores, or backtests.
+- A Massive HTTP 429 stops the active batch immediately; Prism does not retry
+  or request the remaining symbols.
 - Previously stored real data remains available and is visibly timestamped.
 - Every displayed market value names its provider and availability cutoff.
 - Test fixtures exist only inside tests and are never loaded by the application.

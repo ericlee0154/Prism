@@ -18,7 +18,8 @@
 - [x] Store idempotent OHLCV rows in local DuckDB.
 - [x] Preserve observation time, availability time, source, and fetch time.
 - [x] Retain complete, partial, and failed synchronization history.
-- [x] Retry provider rate limits without creating replacement data.
+- [x] Stop the active sync batch immediately on provider quota or rate-limit
+  responses; do not retry or request remaining symbols.
 - [x] Show actual symbol count, row count, date coverage, cutoff, and database
   size.
 

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from apps.api import main
 from packages.prism_core.models import Bar
+from packages.prism_core.providers.massive import MassiveQuotaExceeded
 
 
 @pytest.fixture
@@ -34,6 +35,31 @@ def test_duckdb_repository_serializes_concurrent_reads(client: TestClient) -> No
         results = list(executor.map(lambda _: repository.market_summary(), range(40)))
 
     assert all(result["bar_count"] == 0 for result in results)
+
+
+def test_sync_stops_remaining_symbols_after_quota(client: TestClient) -> None:
+    class QuotaProvider:
+        name = "massive"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def bars(self, symbol, start, end):
+            self.calls.append(symbol)
+            if symbol == "TEAM":
+                raise MassiveQuotaExceeded("quota reached; sync stopped")
+            return []
+
+    provider = QuotaProvider()
+    client.app.state.service.provider = provider
+    response = client.post(
+        "/api/v1/sync",
+        json={"symbols": ["GOOG", "TEAM", "VOO", "VTI"], "years": 2},
+    )
+
+    assert response.status_code == 200
+    assert provider.calls == ["GOOG", "TEAM"]
+    assert response.json()["not_attempted"] == ["VOO", "VTI"]
 
 
 def test_seal_requires_real_stored_market_data(client: TestClient) -> None:
