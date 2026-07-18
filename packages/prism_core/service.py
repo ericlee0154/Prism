@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 
@@ -321,8 +322,12 @@ class PrismService:
             prompt_version=PROMPT_VERSION,
             limit=limit,
         )
+        portfolio_symbols = (
+            self.repository.list_portfolio_symbols()
+            or self.repository.list_symbols()
+        )
         classifications = self.repository.list_instrument_classifications(
-            symbols=self.repository.list_symbols(),
+            symbols=portfolio_symbols,
         )
         events = [
             _event_with_portfolio_matches(event, classifications)
@@ -347,13 +352,16 @@ class PrismService:
             "runs": self.repository.list_event_runs(),
             "portfolio_classifications": classifications,
             "classification_coverage": _classification_coverage(
-                self.repository.list_symbols(),
+                portfolio_symbols,
                 classifications,
             ),
         }
 
     def instrument_classification_center(self) -> dict:
-        symbols = self.repository.list_symbols()
+        symbols = (
+            self.repository.list_portfolio_symbols()
+            or self.repository.list_symbols()
+        )
         classifications = self.repository.list_instrument_classifications(
             symbols=symbols,
         )
@@ -369,7 +377,10 @@ class PrismService:
     def refresh_instrument_classifications(self) -> dict:
         self._require_ai_provider()
         assert self.ai_provider is not None
-        symbols = self.repository.list_symbols()
+        symbols = (
+            self.repository.list_portfolio_symbols()
+            or self.repository.list_symbols()
+        )
         if not symbols:
             raise ValueError("No tracked symbols are stored")
         run_id = self.repository.begin_event_run(
@@ -1216,6 +1227,112 @@ class PrismService:
             "items": self.metric_catalog(),
             "score_models": scoring_methodology(),
         }
+
+    def portfolio_center(self) -> dict:
+        holdings = self.repository.list_portfolio_holdings()
+        priced_cost_basis = 0.0
+        market_value = 0.0
+        items: list[dict[str, Any]] = []
+        missing_symbols: set[str] = set()
+        for holding in holdings:
+            bars = self.repository.list_bars(holding["symbol"])
+            latest = bars[-1] if bars else None
+            cost_basis = holding["shares"] * holding["average_cost"]
+            if latest:
+                item_market_value = holding["shares"] * latest.close
+                item_unrealized = item_market_value - cost_basis
+                priced_cost_basis += cost_basis
+                market_value += item_market_value
+                price = latest.close
+                price_date = latest.timestamp.astimezone(UTC).date().isoformat()
+                data_cutoff = latest.available_at.astimezone(UTC).isoformat()
+            else:
+                item_market_value = None
+                item_unrealized = None
+                price = None
+                price_date = None
+                data_cutoff = None
+                missing_symbols.add(holding["symbol"])
+            items.append(
+                {
+                    **holding,
+                    "cost_basis": cost_basis,
+                    "latest_price": price,
+                    "price_date": price_date,
+                    "data_cutoff": data_cutoff,
+                    "market_value": item_market_value,
+                    "unrealized_pl": item_unrealized,
+                    "unrealized_percent": (
+                        item_unrealized / cost_basis
+                        if item_unrealized is not None and cost_basis > 0
+                        else None
+                    ),
+                }
+            )
+        total_cost_basis = sum(item["cost_basis"] for item in items)
+        priced_count = sum(item["latest_price"] is not None for item in items)
+        return {
+            "items": items,
+            "summary": {
+                "holding_count": len(items),
+                "account_count": len(
+                    {item["account_name"] for item in items}
+                ),
+                "priced_count": priced_count,
+                "pricing_complete": priced_count == len(items),
+                "missing_price_symbols": sorted(missing_symbols),
+                "total_cost_basis": total_cost_basis,
+                "priced_cost_basis": priced_cost_basis,
+                "market_value": market_value if priced_count else None,
+                "unrealized_pl": (
+                    market_value - priced_cost_basis if priced_count else None
+                ),
+                "unrealized_percent": (
+                    (market_value - priced_cost_basis) / priced_cost_basis
+                    if priced_cost_basis > 0
+                    else None
+                ),
+            },
+        }
+
+    def upsert_portfolio_holding(
+        self,
+        *,
+        account_name: str,
+        symbol: str,
+        shares: float,
+        average_cost: float,
+        acquired_date: date | None,
+    ) -> dict:
+        account = account_name.strip()
+        ticker = symbol.strip().upper()
+        if not account:
+            raise ValueError("Account name is required")
+        if not re.fullmatch(r"[A-Z0-9.^-]{1,20}", ticker):
+            raise ValueError("Symbol contains unsupported characters")
+        if not math.isfinite(shares) or shares <= 0:
+            raise ValueError("Shares must be greater than zero")
+        if not math.isfinite(average_cost) or average_cost < 0:
+            raise ValueError("Average cost cannot be negative")
+        holding_id = self.repository.upsert_portfolio_holding(
+            account_name=account,
+            symbol=ticker,
+            shares=shares,
+            average_cost=average_cost,
+            acquired_date=acquired_date.isoformat() if acquired_date else None,
+            source="manual",
+        )
+        center = self.portfolio_center()
+        return {
+            "holding_id": holding_id,
+            **center,
+        }
+
+    def delete_portfolio_holding(self, holding_id: str) -> dict:
+        if not self.repository.delete_portfolio_holding(holding_id):
+            raise ValueError("Holding not found")
+        return self.portfolio_center()
+
 
     def run_backtest(self, horizon_sessions: int) -> dict:
         histories = {

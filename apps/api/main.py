@@ -56,7 +56,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -104,6 +104,14 @@ class DueEventResolveRequest(BaseModel):
 
 class ConfidenceRefreshRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=12)
+
+
+class PortfolioHoldingRequest(BaseModel):
+    account_name: str = Field(min_length=1, max_length=80)
+    symbol: str = Field(min_length=1, max_length=20)
+    shares: float = Field(gt=0)
+    average_cost: float = Field(ge=0)
+    acquired_date: date | None = None
 
 
 @app.get("/api/v1/health")
@@ -157,6 +165,36 @@ def stock_detail(symbol: str, service: Service) -> dict:
 @app.get("/api/v1/metrics/catalog")
 def metric_catalog(service: Service) -> dict:
     return service.metric_methodology()
+
+
+@app.get("/api/v1/portfolio")
+def portfolio(service: Service) -> dict:
+    return service.portfolio_center()
+
+
+@app.post("/api/v1/portfolio/holdings", status_code=201)
+def upsert_portfolio_holding(
+    request: PortfolioHoldingRequest,
+    service: Service,
+) -> dict:
+    try:
+        return service.upsert_portfolio_holding(
+            account_name=request.account_name,
+            symbol=request.symbol,
+            shares=request.shares,
+            average_cost=request.average_cost,
+            acquired_date=request.acquired_date,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.delete("/api/v1/portfolio/holdings/{holding_id}")
+def delete_portfolio_holding(holding_id: str, service: Service) -> dict:
+    try:
+        return service.delete_portfolio_holding(holding_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.get("/api/v1/predictions")

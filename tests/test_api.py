@@ -43,6 +43,11 @@ def test_empty_database_never_returns_default_market_data(client: TestClient) ->
     )
     assert sum(term["weight"] for term in scanner_model["terms"]) == pytest.approx(1)
 
+    portfolio = client.get("/api/v1/portfolio")
+    assert portfolio.status_code == 200
+    assert portfolio.json()["items"] == []
+    assert portfolio.json()["summary"]["market_value"] is None
+
 
 def test_missing_ai_key_never_returns_default_events(client: TestClient) -> None:
     events = client.get("/api/v1/events")
@@ -98,6 +103,64 @@ def test_sync_stops_remaining_symbols_after_quota(client: TestClient) -> None:
     assert response.status_code == 200
     assert provider.calls == ["GOOG", "TEAM"]
     assert response.json()["not_attempted"] == ["VOO", "VTI"]
+
+
+def test_portfolio_uses_only_stored_market_prices(client: TestClient) -> None:
+    created = client.post(
+        "/api/v1/portfolio/holdings",
+        json={
+            "account_name": "Local account",
+            "symbol": "AAPL",
+            "shares": 10,
+            "average_cost": 150,
+            "acquired_date": "2024-01-02",
+        },
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["latest_price"] is None
+    assert body["items"][0]["market_value"] is None
+    assert body["summary"]["missing_price_symbols"] == ["AAPL"]
+
+    timestamp = datetime(2026, 1, 2, 21, 5, tzinfo=UTC)
+    client.app.state.repository.upsert_bars(
+        [
+            Bar(
+                symbol="AAPL",
+                timestamp=timestamp,
+                available_at=timestamp,
+                open=200,
+                high=205,
+                low=198,
+                close=202,
+                volume=1_000_000,
+                source="massive",
+            )
+        ]
+    )
+    valued = client.get("/api/v1/portfolio").json()
+    assert valued["items"][0]["latest_price"] == 202
+    assert valued["items"][0]["market_value"] == 2020
+    assert valued["items"][0]["unrealized_pl"] == 520
+
+    updated = client.post(
+        "/api/v1/portfolio/holdings",
+        json={
+            "account_name": "Local account",
+            "symbol": "AAPL",
+            "shares": 12,
+            "average_cost": 160,
+        },
+    )
+    assert updated.status_code == 201
+    assert len(updated.json()["items"]) == 1
+    assert updated.json()["items"][0]["shares"] == 12
+
+    holding_id = updated.json()["items"][0]["holding_id"]
+    deleted = client.delete(f"/api/v1/portfolio/holdings/{holding_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["items"] == []
 
 
 def test_seal_requires_real_stored_market_data(client: TestClient) -> None:

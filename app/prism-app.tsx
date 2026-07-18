@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 type Language = "zh" | "en";
-type View = "overview" | "scanner" | "metrics" | "events" | "backtest" | "data";
+type View = "overview" | "scanner" | "metrics" | "portfolio" | "events" | "backtest" | "data";
 type Horizon = "10D" | "30D" | "90D";
 
 type PrismUser = { displayName: string; email: string; local: boolean };
@@ -323,6 +323,40 @@ type Pipeline = {
   analyses: unknown[];
   metric_version: string;
 };
+type PortfolioHolding = {
+  holding_id: string;
+  account_name: string;
+  symbol: string;
+  shares: number;
+  average_cost: number;
+  acquired_date: string | null;
+  source: string;
+  source_reference: string | null;
+  created_at: string;
+  updated_at: string;
+  cost_basis: number;
+  latest_price: number | null;
+  price_date: string | null;
+  data_cutoff: string | null;
+  market_value: number | null;
+  unrealized_pl: number | null;
+  unrealized_percent: number | null;
+};
+type PortfolioCenter = {
+  items: PortfolioHolding[];
+  summary: {
+    holding_count: number;
+    account_count: number;
+    priced_count: number;
+    pricing_complete: boolean;
+    missing_price_symbols: string[];
+    total_cost_basis: number;
+    priced_cost_basis: number;
+    market_value: number | null;
+    unrealized_pl: number | null;
+    unrealized_percent: number | null;
+  };
+};
 
 const API_BASE = "/api/v1";
 const LanguageContext = createContext<Language>("zh");
@@ -340,6 +374,7 @@ const translations = {
   overview: { zh: "總覽", en: "Overview" },
   scanner: { zh: "市場掃描", en: "Market scanner" },
   metrics: { zh: "區間 Metrics", en: "Range metrics" },
+  portfolio: { zh: "我的持倉", en: "My holdings" },
   events: { zh: "世界與公司事件", en: "World & company events" },
   backtests: { zh: "回測", en: "Backtests" },
   dataPipeline: { zh: "資料與管線", en: "Data & pipeline" },
@@ -400,6 +435,49 @@ const translations = {
     zh: "分數只由目前儲存的股票池計算，僅供研究，不是投資建議或交易指令。",
     en: "Scores use only the stored universe and are research metrics, not recommendations or order instructions.",
   },
+  portfolioEyebrow: { zh: "本機持倉快照・不執行交易", en: "Local holdings snapshot · no trading" },
+  portfolioTitle: { zh: "把實際持倉接進研究流程。", en: "Connect your real holdings to research." },
+  portfolioCopy: {
+    zh: "股數與成本只存在本機 DuckDB；估值只使用 Prism 已儲存的 Massive 收盤價。缺少價格時保持空白。",
+    en: "Shares and cost basis stay in local DuckDB. Valuation uses only Massive closes already stored by Prism; missing prices remain blank.",
+  },
+  addHolding: { zh: "新增／更新持倉", en: "Add / update holding" },
+  accountName: { zh: "帳戶名稱", en: "Account name" },
+  sharesHeld: { zh: "持有股數", en: "Shares held" },
+  averageCost: { zh: "平均成本", en: "Average cost" },
+  acquiredDate: { zh: "取得日期", en: "Acquired date" },
+  saveHolding: { zh: "儲存持倉", en: "Save holding" },
+  updateHolding: { zh: "更新持倉", en: "Update holding" },
+  editHolding: { zh: "編輯", en: "Edit" },
+  cancelEdit: { zh: "取消", en: "Cancel" },
+  deleteHolding: { zh: "刪除", en: "Delete" },
+  savingHolding: { zh: "儲存中…", en: "Saving…" },
+  localHoldingFormCopy: {
+    zh: "相同帳戶與股票會更新既有持倉；這裡只記錄快照，不執行交易。",
+    en: "A matching account-symbol pair updates the existing holding. This records a snapshot and never executes trades.",
+  },
+  noHoldings: { zh: "尚未建立持倉", en: "No holdings yet" },
+  noHoldingsCopy: {
+    zh: "請在左側手動填入。Prism 只保存本機快照，不會產生任何交易指令。",
+    en: "Enter a holding with the form. Prism stores only a local snapshot and never creates trading instructions.",
+  },
+  holdingCount: { zh: "持倉筆數", en: "Holdings" },
+  accountCount: { zh: "帳戶數", en: "Accounts" },
+  costBasis: { zh: "成本基礎", en: "Cost basis" },
+  marketValue: { zh: "已定價市值", en: "Priced market value" },
+  unrealizedPL: { zh: "未實現損益", en: "Unrealized P/L" },
+  pricingCoverage: { zh: "價格覆蓋", en: "Price coverage" },
+  latestStoredPrice: { zh: "最新儲存價", en: "Latest stored price" },
+  holdingSource: { zh: "資料來源", en: "Source" },
+  missingStoredPrice: { zh: "缺少已儲存價格", en: "Missing stored prices" },
+  missingPriceCopy: {
+    zh: "以下持倉不會被估值，直到你從 Massive 同步相應標的：",
+    en: "These holdings remain unvalued until their symbols are synchronized from Massive:",
+  },
+  openDataSyncShort: { zh: "前往同步", en: "Open data sync" },
+  holdingSaved: { zh: "持倉已儲存", en: "Holding saved" },
+  holdingDeleted: { zh: "持倉已刪除", en: "Holding deleted" },
+  confirmDeleteHolding: { zh: "確定要刪除這筆本機持倉嗎？", en: "Delete this local holding?" },
   rangeMetricsTitle: { zh: "用你選擇的時間區間計算。", en: "Calculate over your selected timeline." },
   rangeMetrics: { zh: "Metrics 時間區間", en: "Metrics timeline" },
   rangeMetricsCopy: {
@@ -1408,6 +1486,121 @@ function BacktestView({ backtests, run, running }: { backtests: Backtest[]; run:
   </div>;
 }
 
+function PortfolioView({
+  center,
+  setCenter,
+  onOpenData,
+  notify,
+}: {
+  center: PortfolioCenter;
+  setCenter: (center: PortfolioCenter) => void;
+  onOpenData: () => void;
+  notify: (message: string) => void;
+}) {
+  const { language, t } = useI18n();
+  const [account, setAccount] = useState("");
+  const [symbol, setSymbol] = useState("");
+  const [shares, setShares] = useState("");
+  const [averageCost, setAverageCost] = useState("");
+  const [acquiredDate, setAcquiredDate] = useState("");
+  const [editing, setEditing] = useState<PortfolioHolding | null>(null);
+  const [busy, setBusy] = useState<"save" | "delete" | "">("");
+  const [error, setError] = useState("");
+  const money = (value: number | null) => value == null
+    ? "—"
+    : new Intl.NumberFormat(language === "zh" ? "zh-TW" : "en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 2,
+    }).format(value);
+  const resetForm = () => {
+    setAccount("");
+    setSymbol("");
+    setShares("");
+    setAverageCost("");
+    setAcquiredDate("");
+    setEditing(null);
+  };
+  const startEdit = (holding: PortfolioHolding) => {
+    setEditing(holding);
+    setAccount(holding.account_name);
+    setSymbol(holding.symbol);
+    setShares(String(holding.shares));
+    setAverageCost(String(holding.average_cost));
+    setAcquiredDate(holding.acquired_date ?? "");
+    setError("");
+  };
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy("save");
+    setError("");
+    try {
+      const result = await api<PortfolioCenter>("/portfolio/holdings", {
+        method: "POST",
+        body: JSON.stringify({
+          account_name: account.trim(),
+          symbol: symbol.trim().toUpperCase(),
+          shares: Number(shares),
+          average_cost: Number(averageCost),
+          acquired_date: acquiredDate || null,
+        }),
+      });
+      setCenter(result);
+      resetForm();
+      notify(t("holdingSaved"));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : t("apiError"));
+    } finally {
+      setBusy("");
+    }
+  };
+  const remove = async (holding: PortfolioHolding) => {
+    if (!window.confirm(t("confirmDeleteHolding"))) return;
+    setBusy("delete");
+    setError("");
+    try {
+      const result = await api<PortfolioCenter>(`/portfolio/holdings/${holding.holding_id}`, { method: "DELETE" });
+      setCenter(result);
+      if (editing?.holding_id === holding.holding_id) resetForm();
+      notify(t("holdingDeleted"));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : t("apiError"));
+    } finally {
+      setBusy("");
+    }
+  };
+  const canSave = account.trim() && symbol.trim() && Number(shares) > 0 && Number(averageCost) >= 0;
+  return <div className="page-section">
+    <Header eyebrow={t("portfolioEyebrow")} title={t("portfolioTitle")} copy={t("portfolioCopy")} />
+    {error && <div className="workspace-notice error">{error}</div>}
+    <div className="summary-grid portfolio-summary">
+      <div className="summary-card featured"><div className="summary-card-label">{t("holdingCount")}</div><div className="summary-value mono">{center.summary.holding_count}</div><div className="summary-meta">{center.summary.account_count} {t("accountCount")}</div></div>
+      <div className="summary-card"><div className="summary-card-label">{t("costBasis")}</div><div className="summary-value mono">{money(center.summary.total_cost_basis)}</div><div className="summary-meta">{center.summary.holding_count} {t("holdingCount")}</div></div>
+      <div className="summary-card"><div className="summary-card-label">{t("marketValue")}</div><div className="summary-value mono">{money(center.summary.market_value)}</div><div className="summary-meta">{t("pricingCoverage")} {center.summary.priced_count}/{center.summary.holding_count}</div></div>
+      <div className="summary-card"><div className="summary-card-label">{t("unrealizedPL")}</div><div className={`summary-value mono ${(center.summary.unrealized_pl ?? 0) >= 0 ? "positive-text" : "negative-text"}`}>{money(center.summary.unrealized_pl)}</div><div className="summary-meta">{formatPercent(center.summary.unrealized_percent)}</div></div>
+    </div>
+    {center.summary.missing_price_symbols.length > 0 && <div className="portfolio-price-warning"><div><strong>{t("missingStoredPrice")}</strong><p>{t("missingPriceCopy")} <span className="mono">{center.summary.missing_price_symbols.join(", ")}</span></p></div><button className="secondary-button" onClick={onOpenData}>{t("openDataSyncShort")}</button></div>}
+    <div className="portfolio-layout">
+      <section className="panel portfolio-form-panel">
+        <div className="panel-header"><div><h2 className="panel-title">{editing ? t("updateHolding") : t("addHolding")}</h2><p className="panel-subtitle">{t("localHoldingFormCopy")}</p></div></div>
+        <form className="portfolio-form" onSubmit={(event) => void save(event)}>
+          <label>{t("accountName")}<input value={account} readOnly={Boolean(editing)} onChange={(event) => setAccount(event.target.value)} placeholder="Robinhood / Fidelity / Etrade" /></label>
+          <label>{t("symbol")}<input className="mono" value={symbol} readOnly={Boolean(editing)} onChange={(event) => setSymbol(event.target.value.toUpperCase())} placeholder="AAPL" /></label>
+          <div className="portfolio-form-pair"><label>{t("sharesHeld")}<input type="number" min="0.00000001" step="any" value={shares} onChange={(event) => setShares(event.target.value)} /></label><label>{t("averageCost")}<input type="number" min="0" step="any" value={averageCost} onChange={(event) => setAverageCost(event.target.value)} /></label></div>
+          <label>{t("acquiredDate")}<input type="date" value={acquiredDate} max={DEFAULT_SYNC_END} onChange={(event) => setAcquiredDate(event.target.value)} /></label>
+          <div className="portfolio-form-actions"><button className="primary-button" disabled={!canSave || Boolean(busy)}>{busy === "save" ? t("savingHolding") : editing ? t("updateHolding") : t("saveHolding")}</button>{editing && <button type="button" className="secondary-button" onClick={resetForm}>{t("cancelEdit")}</button>}</div>
+        </form>
+      </section>
+      <section className="panel portfolio-table-panel">
+        <div className="panel-header"><div><h2 className="panel-title">{t("portfolio")}</h2><p className="panel-subtitle">{t("portfolioEyebrow")}</p></div><span className="tiny-badge">{center.items.length}</span></div>
+        {center.items.length ? <div className="table-wrap"><table className="data-table portfolio-table"><thead><tr><th>{t("accountName")}</th><th>{t("symbol")}</th><th>{t("sharesHeld")}</th><th>{t("averageCost")}</th><th>{t("latestStoredPrice")}</th><th>{t("marketValue")}</th><th>{t("unrealizedPL")}</th><th>{t("acquiredDate")}</th><th>{t("holdingSource")}</th><th /></tr></thead><tbody>
+          {center.items.map((holding) => <tr key={holding.holding_id}><td><strong>{holding.account_name}</strong></td><td><strong className="mono">{holding.symbol}</strong></td><td className="mono">{holding.shares.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td><td className="mono">{money(holding.average_cost)}</td><td className="mono">{holding.latest_price == null ? "—" : <>{money(holding.latest_price)}<small>{holding.price_date}</small></>}</td><td className="mono">{money(holding.market_value)}</td><td className={`mono ${(holding.unrealized_pl ?? 0) >= 0 ? "positive-text" : "negative-text"}`}>{money(holding.unrealized_pl)}<small>{formatPercent(holding.unrealized_percent)}</small></td><td className="mono">{holding.acquired_date ?? "—"}</td><td><span className="tiny-badge">{holding.source}</span></td><td><div className="holding-actions"><button className="table-action" onClick={() => startEdit(holding)}>{t("editHolding")}</button><button className="table-action danger" disabled={busy === "delete"} onClick={() => void remove(holding)}>{t("deleteHolding")}</button></div></td></tr>)}
+        </tbody></table></div> : <div className="empty-market portfolio-empty"><h2>{t("noHoldings")}</h2><p>{t("noHoldingsCopy")}</p></div>}
+      </section>
+    </div>
+  </div>;
+}
+
 function DataView({ pipeline, sync, syncing }: { pipeline: Pipeline | null; sync: (symbols: string[], start: string, end: string) => Promise<void>; syncing: boolean }) {
   const { t } = useI18n();
   const format = useFormatters();
@@ -1436,6 +1629,7 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   const [eventCenter, setEventCenter] = useState<EventCenter | null>(null);
   const [confidenceCenter, setConfidenceCenter] = useState<ConfidenceCenter | null>(null);
   const [metricCatalog, setMetricCatalog] = useState<MetricCatalog | null>(null);
+  const [portfolioCenter, setPortfolioCenter] = useState<PortfolioCenter | null>(null);
   const [horizon, setHorizon] = useState<Horizon>("30D");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1444,17 +1638,17 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
   const [syncing, setSyncing] = useState(false);
   const [running, setRunning] = useState(false);
   const navItems: { id: View; label: string; icon: string }[] = [
-    { id: "overview", label: t("overview"), icon: "⌁" }, { id: "scanner", label: t("scanner"), icon: "◎" }, { id: "metrics", label: t("metrics"), icon: "↔" }, { id: "events", label: t("events"), icon: "◉" }, { id: "backtest", label: t("backtests"), icon: "ƒ" }, { id: "data", label: t("dataPipeline"), icon: "⇄" },
+    { id: "overview", label: t("overview"), icon: "⌁" }, { id: "scanner", label: t("scanner"), icon: "◎" }, { id: "metrics", label: t("metrics"), icon: "↔" }, { id: "portfolio", label: t("portfolio"), icon: "◫" }, { id: "events", label: t("events"), icon: "◉" }, { id: "backtest", label: t("backtests"), icon: "ƒ" }, { id: "data", label: t("dataPipeline"), icon: "⇄" },
   ];
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [overviewResult, scannerResult, pipelineResult, backtestResult, eventResult, confidenceResult, metricResult] = await Promise.all([api<Overview>("/overview"), api<{ items: Stock[] }>("/scanner?horizon=30D"), api<Pipeline>("/pipeline"), api<{ items: Backtest[] }>("/backtests"), api<EventCenter>("/events"), api<ConfidenceCenter>("/confidence"), api<MetricCatalog>("/metrics/catalog")]);
-      setOverview(overviewResult); setStocks(scannerResult.items); setPipeline(pipelineResult); setBacktests(backtestResult.items); setEventCenter(eventResult); setConfidenceCenter(confidenceResult); setMetricCatalog(metricResult);
+      const [overviewResult, scannerResult, pipelineResult, backtestResult, eventResult, confidenceResult, metricResult, portfolioResult] = await Promise.all([api<Overview>("/overview"), api<{ items: Stock[] }>("/scanner?horizon=30D"), api<Pipeline>("/pipeline"), api<{ items: Backtest[] }>("/backtests"), api<EventCenter>("/events"), api<ConfidenceCenter>("/confidence"), api<MetricCatalog>("/metrics/catalog"), api<PortfolioCenter>("/portfolio")]);
+      setOverview(overviewResult); setStocks(scannerResult.items); setPipeline(pipelineResult); setBacktests(backtestResult.items); setEventCenter(eventResult); setConfidenceCenter(confidenceResult); setMetricCatalog(metricResult); setPortfolioCenter(portfolioResult);
       setActiveStock((current) => scannerResult.items.find((stock) => stock.symbol === current?.symbol) ?? scannerResult.items[0] ?? null);
     } catch (loadError) {
-      setOverview(null); setStocks([]); setActiveStock(null); setPipeline(null); setBacktests([]); setEventCenter(null); setConfidenceCenter(null); setMetricCatalog(null); setError(loadError instanceof Error ? loadError.message : "API unavailable");
+      setOverview(null); setStocks([]); setActiveStock(null); setPipeline(null); setBacktests([]); setEventCenter(null); setConfidenceCenter(null); setMetricCatalog(null); setPortfolioCenter(null); setError(loadError instanceof Error ? loadError.message : "API unavailable");
     } finally { setLoading(false); }
   }, []);
   useEffect(() => {
@@ -1483,6 +1677,7 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
         {!loading && !error && view === "overview" && overview && <div className="page-section"><Header eyebrow={t("realStoredData")} title={t("researchStored")} copy={t("researchStoredCopy")} />{overview.market.bar_count === 0 ? <EmptyMarket onOpenData={() => setView("data")} /> : <><SummaryCards overview={overview} /><div className="content-grid"><div className="panel"><div className="panel-header"><div><h2 className="panel-title">{t("storedUniverse")}</h2><p className="panel-subtitle">{t("realCrossSection")}</p></div><button className="secondary-button" onClick={() => setView("scanner")}>{t("viewScanner")}</button></div><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div></>}</div>}
         {!loading && !error && view === "scanner" && <div className="page-section"><Header eyebrow="Massive EOD" title={t("compareReal")} copy={t("compareRealCopy")}><div className="segments">{(["10D", "30D", "90D"] as Horizon[]).map((item) => <button key={item} className={`segment-button ${horizon === item ? "active" : ""}`} onClick={() => setHorizon(item)}>{item}</button>)}</div></Header>{!stocks.length ? <EmptyMarket onOpenData={() => setView("data")} /> : <div className="content-grid"><div className="panel"><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} catalog={metricCatalog} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} catalog={metricCatalog} />}</div>}</div>}
         {!loading && !error && view === "metrics" && <MetricsView stocks={stocks} catalog={metricCatalog} />}
+        {!loading && !error && view === "portfolio" && portfolioCenter && <PortfolioView center={portfolioCenter} setCenter={setPortfolioCenter} onOpenData={() => setView("data")} notify={setToast} />}
         {!loading && !error && view === "events" && <EventsView center={eventCenter} confidence={confidenceCenter} stocks={stocks} reload={load} onOpenSymbol={(symbol) => { const stock = stocks.find((item) => item.symbol === symbol); if (stock) { setActiveStock(stock); setSearch(symbol); setView("scanner"); } }} />}
         {!loading && !error && view === "backtest" && <BacktestView backtests={backtests} run={runBacktest} running={running} />}
         {!loading && !error && view === "data" && <DataView pipeline={pipeline} sync={sync} syncing={syncing} />}

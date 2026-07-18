@@ -250,6 +250,134 @@ textarea:focus-visible {
   padding: 4px 2px;
 }
 
+.portfolio-summary .summary-value {
+  font-size: clamp(20px, 2vw, 27px);
+}
+
+.portfolio-price-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid #e7cda8;
+  border-radius: 10px;
+  background: #fff4e5;
+}
+
+.portfolio-price-warning strong {
+  font-size: 12px;
+}
+
+.portfolio-price-warning p {
+  margin: 5px 0 0;
+  color: #795f3b;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.portfolio-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.55fr) minmax(0, 1.45fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.portfolio-form-panel {
+  position: sticky;
+  top: 84px;
+}
+
+.portfolio-form {
+  display: grid;
+  gap: 13px;
+  padding: 18px;
+}
+
+.portfolio-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.portfolio-form input {
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+}
+
+.portfolio-form input:read-only {
+  background: #edf0eb;
+  color: var(--muted);
+}
+
+.portfolio-form-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.portfolio-form-actions,
+.holding-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.portfolio-form-actions .primary-button {
+  flex: 1;
+}
+
+.portfolio-table-panel {
+  min-width: 0;
+}
+
+.portfolio-table {
+  min-width: 1120px;
+}
+
+.portfolio-table td small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.portfolio-table tbody tr {
+  cursor: default;
+}
+
+.table-action {
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.table-action:hover {
+  border-color: #9cac9f;
+  color: var(--ink);
+}
+
+.table-action.danger:hover {
+  border-color: #d9afa5;
+  color: var(--red);
+}
+
+.portfolio-empty {
+  min-height: 330px;
+}
+
 .language-button {
   min-width: 54px;
   padding: 8px 12px;
@@ -2262,8 +2390,13 @@ textarea:focus-visible {
   }
 
   .content-grid,
-  .lab-grid {
+  .lab-grid,
+  .portfolio-layout {
     grid-template-columns: 1fr;
+  }
+
+  .portfolio-form-panel {
+    position: static;
   }
 
   .source-grid {
@@ -2306,6 +2439,15 @@ textarea:focus-visible {
 
   .main {
     padding: 24px 16px 44px;
+  }
+
+  .portfolio-price-warning {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .portfolio-form-pair {
+    grid-template-columns: 1fr;
   }
 
   .page-heading {

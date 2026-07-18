@@ -247,6 +247,23 @@ class PrismRepository:
             )
             """
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_holdings (
+                holding_id VARCHAR PRIMARY KEY,
+                account_name VARCHAR NOT NULL,
+                symbol VARCHAR NOT NULL,
+                shares DOUBLE NOT NULL,
+                average_cost DOUBLE NOT NULL,
+                acquired_date DATE,
+                source VARCHAR NOT NULL,
+                source_reference VARCHAR,
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL,
+                UNIQUE (account_name, symbol)
+            )
+            """
+        )
         # Remove records created by the retired deterministic demo provider.
         # Real provider failures must leave the workspace empty or stale, never
         # silently repopulate it with fixtures.
@@ -1124,6 +1141,119 @@ class PrismRepository:
             ],
         )
         return experiment_id
+
+    @_serialized
+    def upsert_portfolio_holding(
+        self,
+        *,
+        account_name: str,
+        symbol: str,
+        shares: float,
+        average_cost: float,
+        acquired_date: str | None,
+        source: str,
+        source_reference: str | None = None,
+    ) -> str:
+        account = account_name.strip()
+        ticker = symbol.strip().upper()
+        existing = self.connection.execute(
+            """
+            SELECT holding_id
+            FROM portfolio_holdings
+            WHERE account_name = ? AND symbol = ?
+            """,
+            [account, ticker],
+        ).fetchone()
+        now = datetime.now().astimezone()
+        if existing:
+            holding_id = str(existing[0])
+            self.connection.execute(
+                """
+                UPDATE portfolio_holdings
+                SET shares = ?, average_cost = ?, acquired_date = ?, source = ?,
+                    source_reference = ?, updated_at = ?
+                WHERE holding_id = ?
+                """,
+                [
+                    shares,
+                    average_cost,
+                    acquired_date,
+                    source,
+                    source_reference,
+                    now,
+                    holding_id,
+                ],
+            )
+            return holding_id
+        holding_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO portfolio_holdings
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                holding_id,
+                account,
+                ticker,
+                shares,
+                average_cost,
+                acquired_date,
+                source,
+                source_reference,
+                now,
+                now,
+            ],
+        )
+        return holding_id
+
+    @_serialized
+    def list_portfolio_holdings(self) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT holding_id, account_name, symbol, shares, average_cost,
+                   acquired_date, source, source_reference, created_at, updated_at
+            FROM portfolio_holdings
+            ORDER BY account_name, symbol
+            """
+        ).fetchall()
+        return [
+            {
+                "holding_id": row[0],
+                "account_name": row[1],
+                "symbol": row[2],
+                "shares": float(row[3]),
+                "average_cost": float(row[4]),
+                "acquired_date": row[5].isoformat() if row[5] else None,
+                "source": row[6],
+                "source_reference": row[7],
+                "created_at": row[8].isoformat(),
+                "updated_at": row[9].isoformat(),
+            }
+            for row in rows
+        ]
+
+    @_serialized
+    def delete_portfolio_holding(self, holding_id: str) -> bool:
+        exists = self.connection.execute(
+            "SELECT 1 FROM portfolio_holdings WHERE holding_id = ?",
+            [holding_id],
+        ).fetchone()
+        if not exists:
+            return False
+        self.connection.execute(
+            "DELETE FROM portfolio_holdings WHERE holding_id = ?",
+            [holding_id],
+        )
+        return True
+
+    @_serialized
+    def list_portfolio_symbols(self) -> list[str]:
+        return [
+            str(row[0])
+            for row in self.connection.execute(
+                "SELECT DISTINCT symbol FROM portfolio_holdings ORDER BY symbol"
+            ).fetchall()
+        ]
 
     @_serialized
     def close(self) -> None:
