@@ -279,18 +279,24 @@ textarea:focus-visible {
 
 .portfolio-layout {
   display: grid;
-  grid-template-columns: minmax(280px, 0.55fr) minmax(0, 1.45fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
 }
 
 .portfolio-form-panel {
-  position: sticky;
-  top: 84px;
+  position: static;
 }
 
 .portfolio-form {
   display: grid;
+  grid-template-columns:
+    minmax(160px, 1fr)
+    minmax(110px, 0.65fr)
+    minmax(260px, 1.4fr)
+    minmax(150px, 0.8fr)
+    auto;
+  align-items: end;
   gap: 13px;
   padding: 18px;
 }
@@ -2648,6 +2654,14 @@ textarea:focus-visible {
     position: static;
   }
 
+  .portfolio-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .portfolio-form-actions {
+    grid-column: 1 / -1;
+  }
+
   .source-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -2696,6 +2710,10 @@ textarea:focus-visible {
   }
 
   .portfolio-form-pair {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-form {
     grid-template-columns: 1fr;
   }
 
