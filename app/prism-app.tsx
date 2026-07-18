@@ -516,6 +516,7 @@ const translations = {
   holdingLots: { zh: "持倉明細", en: "Holding details" },
   unitCost: { zh: "每股成本", en: "Unit cost" },
   enteredAt: { zh: "輸入時間", en: "Entered at" },
+  sourceRecord: { zh: "來源紀錄", en: "Source record" },
   lastUpdatedAt: { zh: "上次更新時間", en: "Last updated" },
   neverUpdated: { zh: "尚未更新", en: "Never updated" },
   expandHolding: { zh: "展開持倉明細", en: "Expand holding details" },
@@ -1801,7 +1802,7 @@ function PortfolioView({
                       <div><span>{t("sharesHeld")}</span><strong className="mono">{lot.shares.toLocaleString(undefined, { maximumFractionDigits: 6 })}</strong></div>
                       <div><span>{t("unitCost")}</span><strong className="mono">{money(lot.unit_cost)}</strong></div>
                       <div><span>{t("costBasis")}</span><strong className="mono">{money(lot.cost_basis)}</strong></div>
-                      <div><span>{t("enteredAt")}</span><strong>{dateTime(lot.created_at)}</strong></div>
+                      <div><span>{lot.source === "thinkfolio" && lot.source_reference ? t("sourceRecord") : t("enteredAt")}</span><strong>{lot.source === "thinkfolio" && lot.source_reference ? `Thinkfolio #${lot.source_reference.split(":").at(-1)}` : dateTime(lot.created_at)}</strong></div>
                       <div className="holding-actions"><button className="table-action" onClick={(event) => { event.stopPropagation(); startEdit(holding, lot); }}>{t("editHolding")}</button><button className="table-action danger" disabled={busy === "delete"} onClick={(event) => { event.stopPropagation(); void remove(lot); }}>{t("deleteHolding")}</button></div>
                     </div>)}
                   </div>

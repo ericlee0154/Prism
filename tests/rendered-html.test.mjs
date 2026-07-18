@@ -26,6 +26,7 @@ test("builds the local real-data Prism research workspace", async () => {
   assert.match(app, /90% forecast/);
   assert.doesNotMatch(app, /3D volatility surface/);
   assert.match(app, /Holding details/);
+  assert.match(app, /Source record/);
   assert.match(app, /Position/);
   assert.match(app, /Not held/);
   assert.match(app, /World & company events/);
