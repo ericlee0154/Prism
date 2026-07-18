@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 type View = "overview" | "scanner" | "lab" | "ledger" | "journal" | "data";
 type Horizon = "10D" | "30D" | "90D";
@@ -284,6 +284,15 @@ const ledgerFromApi = (row: Record<string, unknown>): LedgerRow => ({
   recordHash: String(row.recordHash ?? ""),
   source: String(row.source ?? "demo") as LedgerRow["source"],
 });
+
+const subscribeToOnlineState = (callback: () => void) => {
+  window.addEventListener("online", callback);
+  window.addEventListener("offline", callback);
+  return () => {
+    window.removeEventListener("online", callback);
+    window.removeEventListener("offline", callback);
+  };
+};
 
 function Header({
   title,
@@ -1441,7 +1450,11 @@ export function PrismApp({ initialUser }: { initialUser: PrismUser | null }) {
   const [readOnly, setReadOnly] = useState(!initialUser);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
+  const online = useSyncExternalStore(
+    subscribeToOnlineState,
+    () => navigator.onLine,
+    () => true,
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toast, setToast] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -1460,16 +1473,6 @@ export function PrismApp({ initialUser }: { initialUser: PrismUser | null }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  useEffect(() => {
-    const updateOnlineState = () => setOnline(navigator.onLine);
-    window.addEventListener("online", updateOnlineState);
-    window.addEventListener("offline", updateOnlineState);
-    return () => {
-      window.removeEventListener("online", updateOnlineState);
-      window.removeEventListener("offline", updateOnlineState);
-    };
   }, []);
 
   const requestHeaders = useMemo<Record<string, string>>(

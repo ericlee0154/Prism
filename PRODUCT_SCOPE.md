@@ -119,7 +119,7 @@ decision.
   aligned.
 - [x] Pass lint, unit, API, integration, and production-build checks.
 - [x] Provide local setup and operating instructions.
-- [ ] Create a clean Git history and publish the validated site.
+- [x] Create a clean Git history and publish the validated site.
 - [x] Perform a final product review and a second ideation pass.
 
 ## Second-pass enhancements
