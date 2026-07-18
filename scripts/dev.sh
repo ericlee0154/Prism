@@ -16,7 +16,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-".venv/bin/uvicorn" apps.api.main:app --reload --host 127.0.0.1 --port 8000 &
+".venv/bin/uvicorn" apps.api.main:app --host 127.0.0.1 --port 8000 &
 API_PID=$!
 
 npm run dev

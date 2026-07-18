@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from uuid import uuid4
 
@@ -11,14 +13,25 @@ import duckdb
 from .models import Bar
 
 
+def _serialized(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class PrismRepository:
     """Small DuckDB repository with append-only prediction semantics."""
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = RLock()
         self.connection = duckdb.connect(str(database_path))
 
+    @_serialized
     def initialize(self) -> None:
         self.connection.execute(
             """
@@ -66,6 +79,19 @@ class PrismRepository:
         )
         self.connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS range_analyses (
+                analysis_id VARCHAR PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL,
+                symbol VARCHAR NOT NULL,
+                requested_start DATE NOT NULL,
+                requested_end DATE NOT NULL,
+                metric_version VARCHAR NOT NULL,
+                result_json VARCHAR NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS predictions (
                 prediction_id VARCHAR PRIMARY KEY,
                 created_at TIMESTAMPTZ NOT NULL,
@@ -106,6 +132,7 @@ class PrismRepository:
             "DELETE FROM formula_experiments WHERE result_json LIKE '%demo-%'"
         )
 
+    @_serialized
     def begin_sync(self, provider: str, symbols: list[str]) -> str:
         sync_id = str(uuid4())
         self.connection.execute(
@@ -118,6 +145,7 @@ class PrismRepository:
         )
         return sync_id
 
+    @_serialized
     def finish_sync(
         self,
         sync_id: str,
@@ -135,6 +163,7 @@ class PrismRepository:
             [datetime.now().astimezone(), status, rows_written, error, sync_id],
         )
 
+    @_serialized
     def upsert_bars(self, bars: list[Bar]) -> int:
         if not bars:
             return 0
@@ -161,6 +190,7 @@ class PrismRepository:
         )
         return len(bars)
 
+    @_serialized
     def list_symbols(self) -> list[str]:
         return [
             str(row[0])
@@ -169,6 +199,7 @@ class PrismRepository:
             ).fetchall()
         ]
 
+    @_serialized
     def list_bars(
         self,
         symbol: str,
@@ -209,6 +240,7 @@ class PrismRepository:
             for row in cursor.fetchall()
         ]
 
+    @_serialized
     def market_summary(self) -> dict[str, Any]:
         row = self.connection.execute(
             """
@@ -236,6 +268,7 @@ class PrismRepository:
             ),
         }
 
+    @_serialized
     def list_sync_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         cursor = self.connection.execute(
             """
@@ -261,6 +294,7 @@ class PrismRepository:
             for row in cursor.fetchall()
         ]
 
+    @_serialized
     def append_backtest(
         self,
         *,
@@ -285,6 +319,7 @@ class PrismRepository:
         )
         return backtest_id
 
+    @_serialized
     def list_backtests(self, limit: int = 20) -> list[dict[str, Any]]:
         cursor = self.connection.execute(
             """
@@ -309,6 +344,57 @@ class PrismRepository:
             for row in cursor.fetchall()
         ]
 
+    @_serialized
+    def append_range_analysis(
+        self,
+        *,
+        symbol: str,
+        requested_start: str,
+        requested_end: str,
+        metric_version: str,
+        result: dict[str, Any],
+    ) -> str:
+        analysis_id = str(uuid4())
+        self.connection.execute(
+            "INSERT INTO range_analyses VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                analysis_id,
+                datetime.now().astimezone(),
+                symbol,
+                requested_start,
+                requested_end,
+                metric_version,
+                json.dumps(result, sort_keys=True),
+            ],
+        )
+        return analysis_id
+
+    @_serialized
+    def list_range_analyses(self, limit: int = 30) -> list[dict[str, Any]]:
+        cursor = self.connection.execute(
+            """
+            SELECT analysis_id, created_at, symbol, requested_start,
+                   requested_end, metric_version, result_json
+            FROM range_analyses
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [limit],
+        )
+        return [
+            {
+                "analysis_id": row[0],
+                "created_at": row[1].isoformat(),
+                "symbol": row[2],
+                "requested_start": row[3].isoformat(),
+                "requested_end": row[4].isoformat(),
+                "metric_version": row[5],
+                "result": json.loads(row[6]),
+            }
+            for row in cursor.fetchall()
+        ]
+
+    @_serialized
     def append_prediction(self, record: dict[str, Any]) -> dict[str, Any]:
         prediction_id = str(uuid4())
         serialized_snapshot = json.dumps(record["input_snapshot"], sort_keys=True)
@@ -342,6 +428,7 @@ class PrismRepository:
         )
         return {"prediction_id": prediction_id, "record_hash": record_hash, **record}
 
+    @_serialized
     def list_predictions(
         self,
         horizon: str | None = None,
@@ -376,6 +463,7 @@ class PrismRepository:
             for row in cursor.fetchall()
         ]
 
+    @_serialized
     def append_experiment(
         self,
         formula_version: str,
@@ -397,6 +485,7 @@ class PrismRepository:
         )
         return experiment_id
 
+    @_serialized
     def close(self) -> None:
         self.connection.close()
 

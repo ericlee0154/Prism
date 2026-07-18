@@ -250,6 +250,208 @@ textarea:focus-visible {
   padding: 4px 2px;
 }
 
+.language-button {
+  min-width: 54px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.inline-control {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.timeline-panel {
+  display: grid;
+  gap: 20px;
+  padding: 24px;
+}
+
+.timeline-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.timeline-dates label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.timeline-dates input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: white;
+  color: var(--ink);
+}
+
+.dual-range {
+  position: relative;
+  height: 28px;
+}
+
+.dual-range::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  right: 0;
+  left: 0;
+  height: 5px;
+  border-radius: 999px;
+  background: #dce4d5;
+}
+
+.dual-range input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  margin: 0;
+  background: transparent;
+  pointer-events: none;
+  appearance: none;
+}
+
+.dual-range input[type="range"]::-webkit-slider-thumb {
+  width: 20px;
+  height: 20px;
+  border: 3px solid var(--dark);
+  border-radius: 50%;
+  background: var(--lime);
+  cursor: grab;
+  pointer-events: auto;
+  appearance: none;
+}
+
+.timeline-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+}
+
+.timeline-caption strong {
+  color: var(--ink);
+}
+
+.coverage-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  padding: 20px 24px;
+}
+
+.coverage-panel > div {
+  display: grid;
+  gap: 5px;
+}
+
+.coverage-panel span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.coverage-warning {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 11px 13px;
+  border-radius: 8px;
+  background: #fff0dc;
+  color: #865317;
+  font-size: 12px;
+}
+
+.range-chart {
+  padding: 20px 24px;
+}
+
+.range-chart-bars {
+  height: 220px;
+  display: flex;
+  align-items: end;
+  gap: 1px;
+  padding-top: 20px;
+  overflow: hidden;
+}
+
+.range-chart-bars span {
+  min-width: 1px;
+  flex: 1;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(to top, var(--green), var(--lime));
+}
+
+.metric-results {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.forecast-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.forecast-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+}
+
+.forecast-top,
+.forecast-card > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.forecast-card span,
+.forecast-card small,
+.forecast-card p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.forecast-footnote {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+@media (max-width: 760px) {
+  .timeline-dates,
+  .coverage-panel,
+  .forecast-grid,
+  .metric-results {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-caption {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .sidebar-footer {
   margin-top: 13px;
   display: flex;

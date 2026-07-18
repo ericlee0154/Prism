@@ -26,6 +26,13 @@
 
 - [x] Compute returns, volatility, volume confirmation, moving-average
   distance, and drawdown from stored bars.
+- [x] Allow an explicit start and end date for every range analysis.
+- [x] Provide synchronized date inputs and a draggable two-ended timeline.
+- [x] Record requested coverage separately from actual provider coverage.
+- [x] Produce 10-, 30-, and 90-session historical-analog forecasts using only
+  earlier outcomes inside the selected interval.
+- [x] Refuse to produce forecast values when fewer than ten analog samples
+  exist.
 - [x] Rank symbols only against the currently stored universe.
 - [x] Provide 10-, 30-, and 90-session research scores derived from stored
   metrics.
@@ -52,6 +59,12 @@
 - [ ] Normalize holdings, cash, balances, and cost basis without brokerage
   trading permissions.
 - [ ] Compare portfolio exposure with stored research metrics.
+
+## Internationalization
+
+- [x] Support Traditional Chinese and English throughout the local Web UI.
+- [x] Format dates according to the selected language.
+- [x] Provide English and Traditional Chinese operating documentation.
 
 ## Explicit non-goals
 

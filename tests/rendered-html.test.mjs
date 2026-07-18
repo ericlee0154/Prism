@@ -13,7 +13,10 @@ test("builds the local real-data Prism research workspace", async () => {
   assert.match(app, /Market scanner/);
   assert.match(app, /Run real backtest/);
   assert.match(app, /Synchronize to DuckDB/);
-  assert.match(app, /No fallback data is displayed/);
+assert.match(app, /no substitute data is displayed/);
+assert.match(app, /區間 Metrics/);
+assert.match(app, /Calculate metrics & forecast/);
+assert.match(app, /language: \{ zh: "EN", en: "中文" \}/);
   assert.doesNotMatch(app, /demo-seed|initialLedger|const stocks/);
   assert.doesNotMatch(app, /codex-preview|Your site is taking shape|Building your site/i);
 });

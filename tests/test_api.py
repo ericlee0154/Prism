@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -24,6 +25,15 @@ def test_empty_database_never_returns_default_market_data(client: TestClient) ->
     scanner = client.get("/api/v1/scanner?horizon=30D")
     assert scanner.status_code == 200
     assert scanner.json()["items"] == []
+
+
+def test_duckdb_repository_serializes_concurrent_reads(client: TestClient) -> None:
+    repository = client.app.state.repository
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: repository.market_summary(), range(40)))
+
+    assert all(result["bar_count"] == 0 for result in results)
 
 
 def test_seal_requires_real_stored_market_data(client: TestClient) -> None:
@@ -59,6 +69,34 @@ def test_scanner_is_derived_from_stored_bars(client: TestClient) -> None:
     assert items[0]["symbol"] == "REAL"
     assert items[0]["source"] == "massive"
     assert items[0]["price"] == 200
+
+    analysis = client.post(
+        "/api/v1/analyses",
+        json={
+            "symbol": "REAL",
+            "start_date": "2025-01-02",
+            "end_date": "2025-04-12",
+        },
+    )
+    assert analysis.status_code == 201
+    body = analysis.json()
+    assert body["bar_count"] == 100
+    assert body["metrics"]["return_20d"] > 0
+    assert body["forecasts"]["10"]["status"] == "complete"
+    assert body["forecasts"]["10"]["sample_count"] > 0
+
+
+def test_analysis_never_fills_a_missing_range(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/analyses",
+        json={
+            "symbol": "AAPL",
+            "start_date": "2024-01-01",
+            "end_date": "2026-01-01",
+        },
+    )
+    assert response.status_code == 400
+    assert "No stored bars" in response.json()["detail"]
 
 
 def test_every_prediction_cutoff_precedes_its_creation(client: TestClient) -> None:

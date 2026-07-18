@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -72,10 +72,18 @@ class SealPredictionRequest(BaseModel):
 class SyncRequest(BaseModel):
     symbols: list[str] = Field(min_length=1, max_length=100)
     years: int = Field(default=2, ge=1, le=20)
+    start_date: date | None = None
+    end_date: date | None = None
 
 
 class BacktestRequest(BaseModel):
     horizon_sessions: Literal[10, 30, 90] = 30
+
+
+class AnalysisRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=12)
+    start_date: date
+    end_date: date
 
 
 @app.get("/api/v1/health")
@@ -157,7 +165,12 @@ def pipeline(service: Service) -> dict:
 @app.post("/api/v1/sync")
 def sync_market_data(request: SyncRequest, service: Service) -> dict:
     try:
-        return service.sync_market_data(request.symbols, request.years)
+        return service.sync_market_data(
+            request.symbols,
+            request.years,
+            start_date=request.start_date,
+            end_date=request.end_date,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
@@ -172,6 +185,23 @@ def create_backtest(request: BacktestRequest, service: Service) -> dict:
 @app.get("/api/v1/backtests")
 def list_backtests(service: Service) -> dict:
     return {"items": service.repository.list_backtests()}
+
+
+@app.post("/api/v1/analyses", status_code=201)
+def create_analysis(request: AnalysisRequest, service: Service) -> dict:
+    try:
+        return service.analyze_range(
+            request.symbol,
+            start_date=request.start_date,
+            end_date=request.end_date,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/api/v1/analyses")
+def list_analyses(service: Service) -> dict:
+    return {"items": service.repository.list_range_analyses()}
 
 
 @app.get("/")

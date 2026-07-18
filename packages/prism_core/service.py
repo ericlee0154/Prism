@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import math
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
 
 from .backtest import BACKTEST_VERSION, walk_forward_backtest
+from .forecast import historical_analog_forecast
 from .metrics import CATALOG, METRIC_VERSION, compute_price_metrics
 from .providers.massive import MassiveMarketDataProvider
 from .repository import PrismRepository
@@ -44,7 +45,14 @@ class PrismService:
     def provider_configured(self) -> bool:
         return self.provider is not None
 
-    def sync_market_data(self, symbols: list[str], years: int) -> dict:
+    def sync_market_data(
+        self,
+        symbols: list[str],
+        years: int = 2,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
         if not self.provider:
             raise RuntimeError("MASSIVE_API_KEY is not configured")
         cleaned = sorted(
@@ -61,8 +69,20 @@ class PrismService:
         if years < 1 or years > 20:
             raise ValueError("Years must be between 1 and 20")
 
-        end = datetime.now(UTC)
-        start = end - timedelta(days=366 * years)
+        end = (
+            datetime.combine(end_date, time.max, tzinfo=UTC)
+            if end_date
+            else datetime.now(UTC)
+        )
+        start = (
+            datetime.combine(start_date, time.min, tzinfo=UTC)
+            if start_date
+            else end - timedelta(days=366 * years)
+        )
+        if start >= end:
+            raise ValueError("Start date must precede end date")
+        if end > datetime.now(UTC) + timedelta(days=1):
+            raise ValueError("End date cannot be in the future")
         sync_id = self.repository.begin_sync(self.provider.name, cleaned)
         rows_written = 0
         failures: list[dict[str, str]] = []
@@ -86,6 +106,18 @@ class PrismService:
             error=error_text,
         )
         summary = self.repository.market_summary()
+        coverage = {}
+        for symbol in cleaned:
+            stored = self.repository.list_bars(symbol, start=start, end=end)
+            coverage[symbol] = {
+                "bar_count": len(stored),
+                "first_observation": (
+                    stored[0].timestamp.astimezone(UTC).isoformat() if stored else None
+                ),
+                "last_observation": (
+                    stored[-1].timestamp.astimezone(UTC).isoformat() if stored else None
+                ),
+            }
         return {
             "sync_id": sync_id,
             "status": status,
@@ -93,8 +125,78 @@ class PrismService:
             "symbols": cleaned,
             "rows_written": rows_written,
             "failures": failures,
+            "requested_start": start.date().isoformat(),
+            "requested_end": end.date().isoformat(),
+            "coverage": coverage,
             "market": summary,
         }
+
+    def analyze_range(
+        self,
+        symbol: str,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> dict:
+        ticker = symbol.strip().upper()
+        if not ticker:
+            raise ValueError("Symbol is required")
+        if start_date >= end_date:
+            raise ValueError("Start date must precede end date")
+        start = datetime.combine(start_date, time.min, tzinfo=UTC)
+        end = datetime.combine(end_date, time.max, tzinfo=UTC)
+        bars = self.repository.list_bars(ticker, start=start, end=end)
+        if not bars:
+            raise ValueError("No stored bars exist in the requested range")
+        if len(bars) < 21:
+            raise ValueError("At least 21 stored sessions are required")
+
+        cutoff = max(bar.available_at for bar in bars)
+        snapshot = compute_price_metrics(bars, cutoff)
+        actual_start = bars[0].timestamp.astimezone(UTC).date()
+        actual_end = bars[-1].timestamp.astimezone(UTC).date()
+        coverage_warnings: list[str] = []
+        if actual_start > start_date:
+            coverage_warnings.append("requested_start_precedes_stored_data")
+        if actual_end < end_date - timedelta(days=4):
+            coverage_warnings.append("requested_end_exceeds_stored_data")
+
+        forecasts = {
+            str(horizon): historical_analog_forecast(
+                bars,
+                horizon_sessions=horizon,
+            )
+            for horizon in (10, 30, 90)
+        }
+        result = {
+            "symbol": ticker,
+            "requested_start": start_date.isoformat(),
+            "requested_end": end_date.isoformat(),
+            "actual_start": actual_start.isoformat(),
+            "actual_end": actual_end.isoformat(),
+            "bar_count": len(bars),
+            "data_cutoff": cutoff.isoformat(),
+            "source": bars[-1].source,
+            "metric_version": snapshot.metric_version,
+            "metrics": snapshot.values,
+            "coverage_warnings": coverage_warnings,
+            "forecasts": forecasts,
+            "series": [
+                {
+                    "date": bar.timestamp.astimezone(UTC).date().isoformat(),
+                    "close": bar.close,
+                }
+                for bar in bars
+            ],
+        }
+        analysis_id = self.repository.append_range_analysis(
+            symbol=ticker,
+            requested_start=start_date.isoformat(),
+            requested_end=end_date.isoformat(),
+            metric_version=snapshot.metric_version,
+            result=result,
+        )
+        return {"analysis_id": analysis_id, **result}
 
     def _raw_snapshots(self) -> list[dict]:
         snapshots: list[dict] = []
@@ -118,9 +220,9 @@ class PrismService:
                     "change": change,
                     "bars": _normalized_path([bar.close for bar in bars[-22:]]),
                     "bar_count": len(bars),
-                    "first_observation": bars[0].timestamp.isoformat(),
-                    "last_observation": latest.timestamp.isoformat(),
-                    "data_cutoff": cutoff.isoformat(),
+                    "first_observation": bars[0].timestamp.astimezone(UTC).isoformat(),
+                    "last_observation": latest.timestamp.astimezone(UTC).isoformat(),
+                    "data_cutoff": cutoff.astimezone(UTC).isoformat(),
                     "metrics": snapshot.values,
                     "metric_version": snapshot.metric_version,
                     "source": latest.source,
@@ -370,5 +472,6 @@ class PrismService:
             "market": summary,
             "sync_runs": self.repository.list_sync_runs(),
             "backtests": self.repository.list_backtests(),
+            "analyses": self.repository.list_range_analyses(),
             "metric_version": METRIC_VERSION,
         }

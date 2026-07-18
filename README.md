@@ -1,5 +1,7 @@
 # Prism
 
+[繁體中文說明](./README.zh-TW.md)
+
 Prism is a local-only, point-in-time market research workbench. It downloads
 real adjusted daily stock bars from Massive, stores them in DuckDB, derives
 versioned metrics, and runs walk-forward research diagnostics.
@@ -21,7 +23,9 @@ execution path.
 ```text
 React / Vinext UI (local browser)
               |
-              +-- FastAPI on 127.0.0.1:8000
+              +-- same-origin local API route
+                         |
+                         +-- FastAPI on 127.0.0.1:8000
                          |
                          +-- Massive adjusted daily bars
                          +-- point-in-time metrics
@@ -59,7 +63,7 @@ make dev
 ```
 
 Open the local URL printed by Vinext. In **Data & pipeline**, enter the exact
-symbols and history length you want, then synchronize. Prism does not create a
+symbols and date range you want, then synchronize. Prism does not create a
 default symbol universe.
 
 ## Current metrics
@@ -79,6 +83,12 @@ rebalance intervals and reports observation count, Spearman IC, top-minus-
 bottom spread, and directional accuracy. Results exclude fees, slippage, taxes,
 borrow costs, and survivorship corrections.
 
+The **Range metrics** screen provides synchronized date inputs and a draggable
+two-ended timeline. It calculates a point-in-time metric snapshot at the chosen
+end date and builds 10-, 30-, and 90-session historical-analog forecasts using
+only earlier outcomes inside the selected interval. If fewer than ten eligible
+analogs exist, no forecast values are produced.
+
 ## Local API
 
 - `GET /api/v1/health`
@@ -90,6 +100,8 @@ borrow costs, and survivorship corrections.
 - `GET /api/v1/pipeline`
 - `POST /api/v1/backtests`
 - `GET /api/v1/backtests`
+- `POST /api/v1/analyses`
+- `GET /api/v1/analyses`
 - `GET /api/v1/predictions`
 - `POST /api/v1/predictions/seal`
 
