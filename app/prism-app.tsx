@@ -60,6 +60,7 @@ type Forecast = {
     date: string;
     close: number;
     return: number | null;
+    forecast_percentile: number | null;
   } | null;
   actual_window?: {
     session_offset: number;
@@ -449,6 +450,11 @@ const translations = {
   p50Price: { zh: "50% 中位", en: "50% median" },
   p90Price: { zh: "90% 上緣", en: "90% upper" },
   historicalActual: { zh: "歷史真值", en: "Historical actual" },
+  forecastPercentile: { zh: "模型分布百分位", en: "Forecast distribution percentile" },
+  forecastPercentileCopy: {
+    zh: "真實報酬在本次歷史類比 forward-return 樣本中的 mid-rank 百分位。",
+    en: "Mid-rank percentile of the realized return within this forecast's historical-analog forward-return sample.",
+  },
   actualWindow: { zh: "目標日前後 5 個交易日", en: "Five sessions before and after target" },
   actualPending: {
     zh: "所選區間後尚無足夠的已儲存真值；保持空白。",
@@ -1019,6 +1025,7 @@ function ForecastBandChart({ forecast }: { forecast: Forecast }) {
     <div className="forecast-chart-legend"><span className="forecast-legend actual" />{t("historicalActual")}<span className="forecast-legend median" />50%<span className="forecast-legend interval" />10–90%</div>
     {forecast.actual_status === "complete" && forecast.actual_target ? <>
       <div className="actual-target"><span>{t("historicalActual")}</span><strong className="mono">{forecast.actual_target.date} · ${forecast.actual_target.close.toFixed(2)} · {formatPercent(forecast.actual_target.return)}</strong></div>
+      <div className="actual-percentile" title={t("forecastPercentileCopy")}><span>{t("forecastPercentile")}</span><strong className="mono">{forecast.actual_target.forecast_percentile == null ? "—" : `P${forecast.actual_target.forecast_percentile.toFixed(1)}`}</strong></div>
       {!forecast.actual_window_complete && <small className="coverage-warning compact">{t("partialActualWindow")}</small>}
       <div className="actual-window-title">{t("actualWindow")}</div>
       <div className="actual-window" role="table" aria-label={t("actualWindow")}>
@@ -1293,10 +1300,16 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("forecast")}</h2><p className="panel-subtitle">{t("forecastDisclaimer")}</p></div></div><div className="forecast-grid">
         {[10, 30, 90].map((horizon) => {
           const forecast = analysis.forecasts[String(horizon)];
-          return <div className="forecast-card" key={horizon}>
+          const medianReturn = forecast.p50_return ?? forecast.median_return;
+          const displayedDirection = medianReturn == null || Math.abs(medianReturn) < 0.00005
+            ? "neutral"
+            : medianReturn > 0
+              ? "up"
+              : "down";
+          return <div className={`forecast-card forecast-${displayedDirection}`} key={horizon}>
             <div className="forecast-top"><strong>{horizon} {t("sessions")}</strong><span className="tiny-badge">{forecast.status}</span></div>
             {forecast.status === "complete" ? <>
-              <div><span>{t("medianReturn")} (50%)</span><strong className="mono">{formatPercent(forecast.p50_return ?? forecast.median_return)}</strong></div>
+              <div><span>{t("medianReturn")} (50%)</span><strong className="mono">{formatPercent(medianReturn)}</strong></div>
               <div><span>{t("range1090")}</span><strong className="mono">{formatPercent(forecast.p10_return)} → {formatPercent(forecast.p90_return)}</strong></div>
               <div className="forecast-price-heading"><span>{t("forecastPrices")}</span><small>{forecast.origin_date} · ${forecast.origin_price?.toFixed(2)}</small></div>
               <div className="forecast-price-levels">

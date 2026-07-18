@@ -205,7 +205,9 @@ def test_forecast_actuals_are_the_only_out_of_range_analysis_data(
         forecast_10["origin_price"] * (1 + forecast_10["p50_return"])
     )
     assert forecast_10["actual_status"] == "complete"
+    assert forecast_10["actual_target"]["forecast_percentile"] == 100.0
     assert forecast_10["actual_window_complete"] is True
+    assert "_analog_forward_returns" not in forecast_10
     assert [item["session_offset"] for item in forecast_10["actual_window"]] == list(
         range(-5, 6)
     )

@@ -8,7 +8,7 @@ from typing import Sequence
 from .models import Bar
 
 
-FORECAST_VERSION = "historical-analog-v1.1"
+FORECAST_VERSION = "historical-analog-v1.2"
 
 
 def _quantile(values: Sequence[float], probability: float) -> float | None:
@@ -22,6 +22,14 @@ def _quantile(values: Sequence[float], probability: float) -> float | None:
         return ordered[lower]
     weight = position - lower
     return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def _percentile_rank(values: Sequence[float], value: float) -> float | None:
+    if not values:
+        return None
+    below = sum(item < value for item in values)
+    equal = sum(item == value for item in values)
+    return round(100.0 * (below + 0.5 * equal) / len(values), 1)
 
 
 def _features(bars: Sequence[Bar], index: int) -> tuple[float, ...] | None:
@@ -141,6 +149,10 @@ def historical_analog_forecast(
         ),
         "positive_probability": sum(value > 0 for value in returns) / len(returns),
         "analog_dates": [item[2] for item in nearest[:10]],
+        # Removed by attach_historical_actuals before the API response. Keeping
+        # the exact distribution here lets realized validation use the same
+        # analog sample without allowing future bars into forecast generation.
+        "_analog_forward_returns": returns,
     }
 
 
@@ -151,11 +163,17 @@ def attach_historical_actuals(
 ) -> dict:
     """Attach realized prices without exposing them to forecast generation."""
     horizon_sessions = int(forecast["horizon_sessions"])
+    analog_returns = forecast.get("_analog_forward_returns", [])
+    public_forecast = {
+        key: value
+        for key, value in forecast.items()
+        if key != "_analog_forward_returns"
+    }
     ordered = sorted(future_bars, key=lambda bar: bar.timestamp)
     target_index = horizon_sessions - 1
     if target_index < 0 or target_index >= len(ordered):
         return {
-            **forecast,
+            **public_forecast,
             "actual_status": "pending",
             "actual_target": None,
             "actual_window": [],
@@ -165,6 +183,11 @@ def attach_historical_actuals(
 
     target = ordered[target_index]
     origin_price = forecast.get("origin_price")
+    actual_return = (
+        target.close / float(origin_price) - 1.0
+        if origin_price
+        else None
+    )
     window_start = max(0, target_index - 5)
     window_end = min(len(ordered), target_index + 6)
     actual_window = [
@@ -179,14 +202,15 @@ def attach_historical_actuals(
         )
     ]
     return {
-        **forecast,
+        **public_forecast,
         "actual_status": "complete",
         "actual_target": {
             "date": target.timestamp.astimezone(UTC).date().isoformat(),
             "close": target.close,
-            "return": (
-                target.close / float(origin_price) - 1.0
-                if origin_price
+            "return": actual_return,
+            "forecast_percentile": (
+                _percentile_rank(analog_returns, actual_return)
+                if actual_return is not None
                 else None
             ),
         },

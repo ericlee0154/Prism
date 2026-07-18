@@ -830,6 +830,33 @@ textarea:focus-visible {
   background: white;
 }
 
+.forecast-card.forecast-up {
+  border-color: #bcd6b8;
+  background: #edf7eb;
+}
+
+.forecast-card.forecast-down {
+  border-color: #e2c0b8;
+  background: #fceeea;
+}
+
+.forecast-card.forecast-neutral {
+  background: white;
+}
+
+.forecast-card.forecast-up .forecast-price-levels > div,
+.forecast-card.forecast-down .forecast-price-levels > div {
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.forecast-card.forecast-up .forecast-price-levels > div.median {
+  background: #dff0d8;
+}
+
+.forecast-card.forecast-down .forecast-price-levels > div.median {
+  background: #f6ddd6;
+}
+
 .forecast-top,
 .forecast-card > div:not(.forecast-band):not(.forecast-price-levels) {
   display: flex;
@@ -851,6 +878,20 @@ textarea:focus-visible {
 
 .forecast-price-heading small {
   text-align: right;
+}
+
+.actual-percentile {
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid rgba(17, 32, 24, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  cursor: help;
+}
+
+.actual-percentile strong {
+  color: var(--ink);
+  font-size: 13px;
 }
 
 .forecast-price-levels {
