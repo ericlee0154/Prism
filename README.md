@@ -127,6 +127,11 @@ source language and exposes a separate direct **View original** link. Older
 records without translation metadata remain visibly untranslated until the
 next sourced refresh.
 
+Each event separately reports potential impact magnitude, transmission breadth,
+direction, time horizon, and fixed market categories. Locally tracked symbols
+are classified from sourced business or fund exposures and linked to an event
+only through explicit category intersections or a direct company match.
+
 Company events can be researched directly from a forecast window. Scheduled
 earnings and major announcements are attached to every applicable 10-, 30-, or
 90-session horizon. After the event, Prism stores a sourced outcome and
@@ -162,6 +167,8 @@ lineage.
 - `POST /api/v1/analyses`
 - `GET /api/v1/analyses`
 - `GET /api/v1/events`
+- `GET /api/v1/instruments/classifications`
+- `POST /api/v1/instruments/classifications/refresh`
 - `POST /api/v1/events/world/refresh`
 - `POST /api/v1/events/company/refresh`
 - `POST /api/v1/events/due/resolve`

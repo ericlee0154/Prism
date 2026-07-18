@@ -13,8 +13,12 @@ from packages.prism_core.ai_events import (
     ConfidenceEvidenceItem,
     ConfidenceResearchFeed,
     EventOutcome,
+    InstrumentClassificationFeed,
+    InstrumentClassificationItem,
+    MarketImpactAssessment,
     OpenAIEventResearchProvider,
     OpenAIQuotaExceeded,
+    PROMPT_VERSION,
     ResearchSourceReference,
     WorldEventFeed,
 )
@@ -55,7 +59,16 @@ def test_openai_event_provider_keeps_only_retrieved_sources() -> None:
                     "title": "央行決策",
                     "summary": "一項已排定的政策決策。",
                     "why_markets_care": "利率可能影響資產估值。",
+                    "impact_rationale": "影響可能集中於利率敏感資產。",
                     "watch_items": ["政策利率"],
+                },
+                "impact": {
+                    "magnitude_score": 4,
+                    "breadth": "broad_market",
+                    "direction": "mixed",
+                    "time_horizons": ["immediate", "short_term"],
+                    "categories": ["broad_market", "interest_rates"],
+                    "rationale": "The decision may affect rate-sensitive assets.",
                 },
                 "source_references": [
                     {"url": source_url, "language": "EN"},
@@ -172,7 +185,16 @@ def test_codex_cli_provider_returns_schema_bound_grounded_output(
                     "title": "政策決策",
                     "summary": "一項已確認的政策決策已排定。",
                     "why_markets_care": "該決策可能影響利率。",
+                    "impact_rationale": "影響可能擴及利率敏感資產。",
                     "watch_items": ["政策利率"],
+                },
+                "impact": {
+                    "magnitude_score": 4,
+                    "breadth": "broad_market",
+                    "direction": "mixed",
+                    "time_horizons": ["immediate"],
+                    "categories": ["broad_market", "interest_rates"],
+                    "rationale": "The decision may affect rate-sensitive assets.",
                 },
                 "source_references": [
                     {"url": source_url, "language": "EN"},
@@ -294,6 +316,139 @@ def test_codex_cli_provider_uses_safe_default_for_invalid_timeout(
     assert provider.model == "gpt-5.6-sol"
 
 
+def test_instrument_classification_links_event_to_tracked_symbol(
+    tmp_path,
+) -> None:
+    repository = PrismRepository(tmp_path / "classification.duckdb")
+    repository.initialize()
+    timestamp = datetime(2026, 7, 18, 21, tzinfo=UTC)
+    repository.upsert_bars(
+        [
+            Bar(
+                symbol="AAPL",
+                timestamp=timestamp,
+                available_at=timestamp,
+                open=200,
+                high=202,
+                low=199,
+                close=201,
+                volume=1_000_000,
+                source="massive",
+            )
+        ]
+    )
+    service = PrismService(repository)
+    source_url = "https://example.com/aapl-profile"
+
+    class FakeClassificationProvider:
+        name = "codex_cli"
+        model = "test-model"
+        configured = True
+
+        def instrument_classifications(self, **kwargs):
+            return AIResearchResult(
+                payload=InstrumentClassificationFeed(
+                    as_of=date(2026, 7, 18),
+                    instruments=[
+                        InstrumentClassificationItem(
+                            symbol="AAPL",
+                            display_name="Apple",
+                            instrument_type="equity",
+                            categories=[
+                                "technology",
+                                "consumer_discretionary",
+                            ],
+                            summary="Consumer technology company.",
+                            summary_zh="消費科技公司。",
+                            source_references=[
+                                ResearchSourceReference(
+                                    url=source_url,
+                                    language="EN",
+                                )
+                            ],
+                        )
+                    ],
+                ),
+                response_id="classification_response",
+                model=self.model,
+                sources=[{"url": source_url, "title": "Company profile"}],
+                usage={"total_tokens": 20},
+            )
+
+    service.ai_provider = FakeClassificationProvider()
+    refreshed = service.refresh_instrument_classifications()
+    assert refreshed["coverage"]["classified_count"] == 1
+    assert refreshed["items"][0]["categories"] == [
+        "technology",
+        "consumer_discretionary",
+    ]
+
+    run_id = repository.begin_event_run(
+        scope="world",
+        symbols=[],
+        window_start="2026-07-18",
+        window_end="2026-07-18",
+        provider="codex_cli",
+        model="test-model",
+        prompt_version=PROMPT_VERSION,
+    )
+    repository.upsert_research_event(
+        {
+            "dedupe_key": "technology-event",
+            "scope": "world",
+            "symbol": None,
+            "event_type": "technology",
+            "status": "ongoing",
+            "title": "Technology event",
+            "summary": "A sourced technology event.",
+            "event_date_start": "2026-07-18",
+            "event_date_end": None,
+            "release_timing": None,
+            "importance": 4,
+            "confidence": 0.9,
+            "regions": ["US"],
+            "affected_assets": ["technology equities"],
+            "watch_items": ["developments"],
+            "expectations": {
+                "impact_assessment": {
+                    "magnitude_score": 4,
+                    "breadth": "sector",
+                    "direction": "mixed",
+                    "time_horizons": ["short_term"],
+                    "categories": ["technology"],
+                    "rationale": "Technology shares may react.",
+                },
+                "translation_zh": {
+                    "title": "科技事件",
+                    "summary": "一則有來源的科技事件。",
+                    "why_markets_care": "科技股可能反應。",
+                    "impact_rationale": "科技股可能反應。",
+                    "watch_items": ["後續發展"],
+                },
+            },
+            "actual": {},
+            "reaction": {},
+            "sources": [
+                {
+                    "url": source_url,
+                    "title": "Company profile",
+                    "language": "EN",
+                }
+            ],
+            "provider": "codex_cli",
+            "model": "test-model",
+            "prompt_version": PROMPT_VERSION,
+        },
+        run_id=run_id,
+    )
+    center = service.event_center()
+    assert center["events"][0]["portfolio_matches"][0]["symbol"] == "AAPL"
+    assert center["events"][0]["portfolio_matches"][0][
+        "matched_categories"
+    ] == ["technology"]
+    repository.close()
+
+
 def test_company_event_lifecycle_connects_forecast_and_market_reaction(
     tmp_path,
 ) -> None:
@@ -367,7 +522,16 @@ def test_company_event_lifecycle_connects_forecast_and_market_reaction(
                                 market_expectations=["營收成長"],
                                 bullish_scenario="結果高於已述預期。",
                                 bearish_scenario="結果低於已述預期。",
+                                impact_rationale="影響主要集中於科技股。",
                                 watch_items=["財測"],
+                            ),
+                            impact=MarketImpactAssessment(
+                                magnitude_score=3,
+                                breadth="sector",
+                                direction="mixed",
+                                time_horizons=["immediate", "short_term"],
+                                categories=["technology", "broad_market"],
+                                rationale="The event may affect technology shares.",
                             ),
                             source_references=[
                                 ResearchSourceReference(

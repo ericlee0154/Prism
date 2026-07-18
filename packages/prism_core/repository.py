@@ -199,6 +199,24 @@ class PrismRepository:
         )
         self.connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS instrument_classifications (
+                symbol VARCHAR PRIMARY KEY,
+                updated_at TIMESTAMPTZ NOT NULL,
+                display_name VARCHAR NOT NULL,
+                instrument_type VARCHAR NOT NULL,
+                categories_json VARCHAR NOT NULL,
+                summary VARCHAR NOT NULL,
+                summary_zh VARCHAR NOT NULL,
+                sources_json VARCHAR NOT NULL,
+                provider VARCHAR NOT NULL,
+                model VARCHAR NOT NULL,
+                prompt_version VARCHAR NOT NULL,
+                run_id VARCHAR NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS predictions (
                 prediction_id VARCHAR PRIMARY KEY,
                 created_at TIMESTAMPTZ NOT NULL,
@@ -813,6 +831,89 @@ class PrismRepository:
                 "response_id": row[11],
                 "usage": json.loads(row[12] or "{}"),
                 "error": row[13],
+            }
+            for row in rows
+        ]
+
+    @_serialized
+    def upsert_instrument_classification(
+        self,
+        classification: dict[str, Any],
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO instrument_classifications
+            (symbol, updated_at, display_name, instrument_type, categories_json,
+             summary, summary_zh, sources_json, provider, model, prompt_version,
+             run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (symbol) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                display_name = excluded.display_name,
+                instrument_type = excluded.instrument_type,
+                categories_json = excluded.categories_json,
+                summary = excluded.summary,
+                summary_zh = excluded.summary_zh,
+                sources_json = excluded.sources_json,
+                provider = excluded.provider,
+                model = excluded.model,
+                prompt_version = excluded.prompt_version,
+                run_id = excluded.run_id
+            """,
+            [
+                classification["symbol"].upper(),
+                datetime.now().astimezone(),
+                classification["display_name"],
+                classification["instrument_type"],
+                json.dumps(classification["categories"], sort_keys=True),
+                classification["summary"],
+                classification["summary_zh"],
+                json.dumps(classification["sources"], sort_keys=True),
+                classification["provider"],
+                classification["model"],
+                classification["prompt_version"],
+                classification["run_id"],
+            ],
+        )
+
+    @_serialized
+    def list_instrument_classifications(
+        self,
+        *,
+        symbols: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        parameters: list[Any] = []
+        where = ""
+        if symbols:
+            cleaned = sorted({symbol.upper() for symbol in symbols})
+            placeholders = ", ".join("?" for _ in cleaned)
+            where = f"WHERE symbol IN ({placeholders})"
+            parameters.extend(cleaned)
+        rows = self.connection.execute(
+            f"""
+            SELECT symbol, updated_at, display_name, instrument_type,
+                   categories_json, summary, summary_zh, sources_json,
+                   provider, model, prompt_version, run_id
+            FROM instrument_classifications
+            {where}
+            ORDER BY symbol
+            """,
+            parameters,
+        ).fetchall()
+        return [
+            {
+                "symbol": row[0],
+                "updated_at": row[1].isoformat(),
+                "display_name": row[2],
+                "instrument_type": row[3],
+                "categories": json.loads(row[4]),
+                "summary": row[5],
+                "summary_zh": row[6],
+                "sources": json.loads(row[7]),
+                "provider": row[8],
+                "model": row[9],
+                "prompt_version": row[10],
+                "run_id": row[11],
             }
             for row in rows
         ]

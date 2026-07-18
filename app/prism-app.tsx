@@ -58,7 +58,34 @@ type EventTranslationZh = {
   market_expectations?: string[];
   bullish_scenario?: string;
   bearish_scenario?: string;
+  impact_rationale?: string;
   watch_items?: string[];
+};
+type MarketImpactAssessment = {
+  magnitude_score: number;
+  breadth: string;
+  direction: string;
+  time_horizons: string[];
+  categories: string[];
+  rationale: string;
+};
+type PortfolioMatch = {
+  symbol: string;
+  display_name: string;
+  matched_categories: string[];
+  direct_company_match: boolean;
+};
+type InstrumentClassification = {
+  symbol: string;
+  updated_at: string;
+  display_name: string;
+  instrument_type: string;
+  categories: string[];
+  summary: string;
+  summary_zh: string;
+  sources: EventSource[];
+  model: string;
+  prompt_version: string;
 };
 type EventReturn = {
   status: "complete" | "pending";
@@ -100,6 +127,7 @@ type ResearchEvent = {
   model: string;
   prompt_version: string;
   forecast_horizons?: number[];
+  portfolio_matches?: PortfolioMatch[];
 };
 type EventCenter = {
   provider: string | null;
@@ -109,6 +137,12 @@ type EventCenter = {
   prompt_version: string;
   due_event_count: number;
   events: ResearchEvent[];
+  portfolio_classifications: InstrumentClassification[];
+  classification_coverage: {
+    tracked_count: number;
+    classified_count: number;
+    unclassified_symbols: string[];
+  };
   runs: {
     run_id: string;
     created_at: string;
@@ -350,6 +384,20 @@ const translations = {
   sourceLanguage: { zh: "來源語言", en: "Source language" },
   sourceLanguageUnknown: { zh: "未記錄", en: "Not recorded" },
   viewOriginal: { zh: "查看原文", en: "View original" },
+  marketImpact: { zh: "可能市場影響", en: "Potential market impact" },
+  impactMagnitude: { zh: "影響規模", en: "Magnitude" },
+  impactBreadth: { zh: "影響範圍", en: "Breadth" },
+  impactDirection: { zh: "可能方向", en: "Potential direction" },
+  impactHorizon: { zh: "時間尺度", en: "Time horizon" },
+  portfolioConnections: { zh: "追蹤標的連結", en: "Tracked-symbol connections" },
+  classificationTitle: { zh: "追蹤標的事前分類", en: "Tracked-symbol classification" },
+  classificationCopy: {
+    zh: "以有來源的業務與基金曝險分類，新聞只透過共同分類連結；未分類時不猜測。",
+    en: "Classify sourced business and fund exposures first; news links only through shared categories, with no guessing for unclassified symbols.",
+  },
+  refreshClassifications: { zh: "更新追蹤分類", en: "Refresh classifications" },
+  classifying: { zh: "分類中…", en: "Classifying…" },
+  classificationCoverage: { zh: "分類覆蓋", en: "Classification coverage" },
   translationUnavailable: {
     zh: "此舊資料尚無中文翻譯；重新研究後才會補齊。",
     en: "This older record has no Chinese translation yet; refresh research to add it.",
@@ -474,6 +522,69 @@ const dayToDate = (value: number) => new Date(value * 86_400_000).toISOString().
 const formatPercent = (value: number | null | undefined, digits = 2) => value == null ? "—" : `${(value * 100).toFixed(digits)}%`;
 const scoreFor = (stock: Stock, horizon: Horizon) => horizon === "10D" ? stock.score10 : horizon === "30D" ? stock.score30 : stock.score90;
 
+const marketCategoryLabels: Record<string, { zh: string; en: string }> = {
+  broad_market: { zh: "總體市場", en: "Broad market" },
+  technology: { zh: "科技股", en: "Technology" },
+  semiconductors: { zh: "半導體", en: "Semiconductors" },
+  software: { zh: "軟體", en: "Software" },
+  cloud: { zh: "雲端", en: "Cloud" },
+  artificial_intelligence: { zh: "人工智慧", en: "Artificial intelligence" },
+  communication_services: { zh: "通訊服務", en: "Communication services" },
+  consumer_discretionary: { zh: "非必需消費", en: "Consumer discretionary" },
+  consumer_staples: { zh: "必需消費", en: "Consumer staples" },
+  financials: { zh: "金融股", en: "Financials" },
+  industrials: { zh: "工業股", en: "Industrials" },
+  defense: { zh: "國防／軍工", en: "Defense" },
+  aerospace: { zh: "航太", en: "Aerospace" },
+  energy: { zh: "能源", en: "Energy" },
+  materials: { zh: "原物料", en: "Materials" },
+  healthcare: { zh: "醫療保健", en: "Healthcare" },
+  utilities: { zh: "公用事業", en: "Utilities" },
+  real_estate: { zh: "房地產", en: "Real estate" },
+  transportation: { zh: "運輸", en: "Transportation" },
+  government_bonds: { zh: "政府債券", en: "Government bonds" },
+  interest_rates: { zh: "利率", en: "Interest rates" },
+  currencies: { zh: "匯率", en: "Currencies" },
+  commodities: { zh: "大宗商品", en: "Commodities" },
+  crypto: { zh: "加密資產", en: "Crypto" },
+  international: { zh: "國際市場", en: "International markets" },
+};
+const breadthLabels: Record<string, { zh: string; en: string }> = {
+  single_company: { zh: "單一公司", en: "Single company" },
+  industry: { zh: "產業鏈", en: "Industry" },
+  sector: { zh: "單一板塊", en: "Sector" },
+  multi_sector: { zh: "跨板塊", en: "Multiple sectors" },
+  broad_market: { zh: "總體市場", en: "Broad market" },
+  global_cross_asset: { zh: "全球跨資產", en: "Global cross-asset" },
+};
+const directionLabels: Record<string, { zh: string; en: string }> = {
+  positive: { zh: "偏正向", en: "Positive" },
+  negative: { zh: "偏負向", en: "Negative" },
+  mixed: { zh: "多空混合", en: "Mixed" },
+  uncertain: { zh: "方向不確定", en: "Uncertain" },
+};
+const horizonLabels: Record<string, { zh: string; en: string }> = {
+  immediate: { zh: "即時", en: "Immediate" },
+  short_term: { zh: "短期", en: "Short term" },
+  medium_term: { zh: "中期", en: "Medium term" },
+  long_term: { zh: "長期", en: "Long term" },
+};
+
+function localizedTaxonomyLabel(
+  labels: Record<string, { zh: string; en: string }>,
+  value: string,
+  language: Language,
+) {
+  return labels[value]?.[language] ?? value.replaceAll("_", " ");
+}
+
+function impactMagnitudeLabel(score: number, language: Language) {
+  const labels = language === "zh"
+    ? ["", "有限", "小型", "中等", "重大", "系統性"]
+    : ["", "Limited", "Small", "Moderate", "Major", "Systemic"];
+  return labels[Math.max(1, Math.min(5, Math.round(score)))];
+}
+
 function localizedEventContent(event: ResearchEvent, language: Language) {
   const candidate = event.expectations.translation_zh;
   const translation = candidate && typeof candidate === "object" && !Array.isArray(candidate)
@@ -481,7 +592,7 @@ function localizedEventContent(event: ResearchEvent, language: Language) {
     : null;
   const expectations = Object.fromEntries(
     Object.entries(event.expectations)
-      .filter(([key]) => key !== "translation_zh")
+      .filter(([key]) => !["translation_zh", "impact_assessment"].includes(key))
       .map(([key, value]) => [
         key,
         language === "zh" && translation?.[key as keyof EventTranslationZh] != null
@@ -489,6 +600,10 @@ function localizedEventContent(event: ResearchEvent, language: Language) {
           : value,
       ]),
   );
+  const impactCandidate = event.expectations.impact_assessment;
+  const impact = impactCandidate && typeof impactCandidate === "object" && !Array.isArray(impactCandidate)
+    ? impactCandidate as MarketImpactAssessment
+    : null;
   return {
     title: language === "zh" && translation?.title ? translation.title : event.title,
     summary: language === "zh" && translation?.summary ? translation.summary : event.summary,
@@ -496,6 +611,14 @@ function localizedEventContent(event: ResearchEvent, language: Language) {
       ? translation.watch_items
       : event.watch_items,
     expectations,
+    impact: impact
+      ? {
+          ...impact,
+          rationale: language === "zh" && translation?.impact_rationale
+            ? translation.impact_rationale
+            : impact.rationale,
+        }
+      : null,
     hasChineseTranslation: Boolean(translation?.title && translation?.summary),
   };
 }
@@ -513,6 +636,47 @@ function EventSourceLinks({ sources, heading = true }: { sources: EventSource[];
       </div>;
     })}</div>
   </div>;
+}
+
+function MarketImpactPanel({
+  impact,
+  matches,
+  onOpenSymbol,
+}: {
+  impact: MarketImpactAssessment;
+  matches: PortfolioMatch[];
+  onOpenSymbol: (symbol: string) => void;
+}) {
+  const { language, t } = useI18n();
+  return <div className="event-impact-panel">
+    <div className="impact-heading"><strong>{t("marketImpact")}</strong><span className={`impact-score impact-${impact.magnitude_score}`}>{impact.magnitude_score}/5 · {impactMagnitudeLabel(impact.magnitude_score, language)}</span></div>
+    <div className="impact-facts">
+      <span><small>{t("impactBreadth")}</small><b>{localizedTaxonomyLabel(breadthLabels, impact.breadth, language)}</b></span>
+      <span><small>{t("impactDirection")}</small><b>{localizedTaxonomyLabel(directionLabels, impact.direction, language)}</b></span>
+      <span><small>{t("impactHorizon")}</small><b>{impact.time_horizons.map((item) => localizedTaxonomyLabel(horizonLabels, item, language)).join(" · ")}</b></span>
+    </div>
+    <p>{impact.rationale}</p>
+    <div className="impact-category-list">{impact.categories.map((category) => <span className="tiny-badge" key={category}>{localizedTaxonomyLabel(marketCategoryLabels, category, language)}</span>)}</div>
+    {matches.length > 0 && <div className="portfolio-connections"><strong>{t("portfolioConnections")}</strong><div className="portfolio-match-list">{matches.map((match) => <button className="portfolio-match" key={match.symbol} onClick={() => onOpenSymbol(match.symbol)}><span>{match.symbol}</span><small>{match.direct_company_match ? (language === "zh" ? "公司直接相關" : "Direct company match") : match.matched_categories.map((category) => localizedTaxonomyLabel(marketCategoryLabels, category, language)).join(" · ")}</small><b>→</b></button>)}</div></div>}
+  </div>;
+}
+
+function ClassificationPanel({
+  center,
+  busy,
+  refresh,
+}: {
+  center: EventCenter | null;
+  busy: boolean;
+  refresh: () => Promise<void>;
+}) {
+  const { language, t } = useI18n();
+  const coverage = center?.classification_coverage;
+  return <section className="panel classification-panel">
+    <div className="panel-header"><div><h2 className="panel-title">{t("classificationTitle")}</h2><p className="panel-subtitle">{t("classificationCopy")}</p></div><div className="heading-actions"><span className="tiny-badge live">{t("classificationCoverage")} {coverage?.classified_count ?? 0}/{coverage?.tracked_count ?? 0}</span><button className="secondary-button" disabled={busy || !center?.provider_configured} onClick={() => void refresh()}>{busy ? t("classifying") : t("refreshClassifications")}</button></div></div>
+    {center?.portfolio_classifications.length ? <div className="classification-grid">{center.portfolio_classifications.map((item) => <article className="classification-card" key={item.symbol}><div><strong>{item.symbol}</strong><span>{item.display_name}</span></div><p>{language === "zh" ? item.summary_zh : item.summary}</p><div className="impact-category-list">{item.categories.map((category) => <span className="tiny-badge" key={category}>{localizedTaxonomyLabel(marketCategoryLabels, category, language)}</span>)}</div></article>)}</div> : <div className="empty-state">{language === "zh" ? "尚未執行追蹤標的分類。" : "Tracked symbols have not been classified yet."}</div>}
+    {coverage?.unclassified_symbols.length ? <small className="classification-missing">{language === "zh" ? "尚未分類：" : "Unclassified: "}{coverage.unclassified_symbols.join(", ")}</small> : null}
+  </section>;
 }
 
 function useFormatters() {
@@ -682,7 +846,7 @@ function MetricsView({ stocks }: { stocks: Stock[] }) {
   </div>;
 }
 
-function EventCard({ event, onResolve, busy }: { event: ResearchEvent; onResolve: (eventId: string) => Promise<void>; busy: boolean }) {
+function EventCard({ event, onResolve, onOpenSymbol, busy }: { event: ResearchEvent; onResolve: (eventId: string) => Promise<void>; onOpenSymbol: (symbol: string) => void; busy: boolean }) {
   const { language, t } = useI18n();
   const content = localizedEventContent(event, language);
   const actualResults = Array.isArray(event.actual.actual_results)
@@ -695,6 +859,7 @@ function EventCard({ event, onResolve, busy }: { event: ResearchEvent; onResolve
     <h3>{content.title}</h3><p>{content.summary}</p>
     {language === "zh" && !content.hasChineseTranslation && <small className="translation-unavailable">{t("translationUnavailable")}</small>}
     <div className="event-facts"><span>{t("importance")} <strong>{event.importance}/5</strong></span><span>{t("confidence")} <strong>{formatPercent(event.confidence, 0)}</strong></span><span>{event.model}</span></div>
+    {content.impact && <MarketImpactPanel impact={content.impact} matches={event.portfolio_matches ?? []} onOpenSymbol={onOpenSymbol} />}
     {Object.keys(content.expectations).length > 0 && <div className="event-detail"><strong>{t("expectations")}</strong>{Object.entries(content.expectations).map(([key, value]) => Array.isArray(value) ? <div key={key}><small>{key.replaceAll("_", " ")}</small><ul>{value.filter((item): item is string => typeof item === "string").map((item) => <li key={item}>{item}</li>)}</ul></div> : value ? <p key={key}><small>{key.replaceAll("_", " ")}</small>{String(value)}</p> : null)}</div>}
     {content.watchItems.length > 0 && <div className="event-detail"><strong>{t("watchItems")}</strong><ul>{content.watchItems.map((item) => <li key={item}>{item}</li>)}</ul></div>}
     {actualResults.length > 0 && <div className="event-detail actual"><strong>{t("actualResult")}</strong><ul>{actualResults.map((item) => <li key={item}>{item}</li>)}</ul></div>}
@@ -714,7 +879,7 @@ function ConfidencePanel({ center, stocks, onRefresh, busy }: { center: Confiden
   </section>;
 }
 
-function EventsView({ center, confidence, stocks, reload }: { center: EventCenter | null; confidence: ConfidenceCenter | null; stocks: Stock[]; reload: () => Promise<void> }) {
+function EventsView({ center, confidence, stocks, reload, onOpenSymbol }: { center: EventCenter | null; confidence: ConfidenceCenter | null; stocks: Stock[]; reload: () => Promise<void>; onOpenSymbol: (symbol: string) => void }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -734,9 +899,10 @@ function EventsView({ center, confidence, stocks, reload }: { center: EventCente
   return <div className="page-section"><Header eyebrow={t("eventResearch")} title={t("eventResearchTitle")} copy={t("eventResearchCopy")}><button className="secondary-button" disabled={Boolean(busy) || !center?.provider_configured} onClick={() => void act("world", "/events/world/refresh")}>{busy === "world" ? t("refreshingEvents") : t("refreshWorld")}</button><button className="secondary-button" disabled={Boolean(busy) || !center?.provider_configured || !center.due_event_count} onClick={() => void act("due", "/events/due/resolve", { limit: 5 })}>{t("resolveDue")} ({center?.due_event_count ?? 0})</button><button className="secondary-button" disabled={Boolean(busy)} onClick={() => void act("reaction", "/events/reactions/refresh")}>{t("refreshReactions")}</button></Header>
     {error && <div className="workspace-notice error">{error}</div>}
     {!center?.provider_configured && <div className="panel empty-market"><span className="tiny-badge">{t("emptyByDesign")}</span><h2>{t("aiKeyMissing")}</h2><p>{t("aiKeyMissingCopy")}</p>{center?.configuration_error && <small className="mono negative-text">{center.configuration_error}</small>}</div>}
+    <ClassificationPanel center={center} busy={busy === "classifications"} refresh={() => act("classifications", "/instruments/classifications/refresh")} />
     {center?.provider_configured && !center.events.length && <div className="panel empty-market"><h2>{t("noStoredEvents")}</h2><p>{t("noStoredEventsCopy")}</p></div>}
-    {world.length > 0 && <section><div className="section-heading"><h2>{t("worldEvents")}</h2><span>{world.length}</span></div><div className="event-grid">{world.map((event) => <EventCard key={event.event_id} event={event} busy={Boolean(busy)} onResolve={(eventId) => act(`event-${eventId}`, `/events/${eventId}/resolve`)} />)}</div></section>}
-    {company.length > 0 && <section><div className="section-heading"><h2>{t("companyEvents")}</h2><span>{company.length}</span></div><div className="event-grid">{company.map((event) => <EventCard key={event.event_id} event={event} busy={Boolean(busy)} onResolve={(eventId) => act(`event-${eventId}`, `/events/${eventId}/resolve`)} />)}</div></section>}
+    {world.length > 0 && <section><div className="section-heading"><h2>{t("worldEvents")}</h2><span>{world.length}</span></div><div className="event-grid">{world.map((event) => <EventCard key={event.event_id} event={event} busy={Boolean(busy)} onOpenSymbol={onOpenSymbol} onResolve={(eventId) => act(`event-${eventId}`, `/events/${eventId}/resolve`)} />)}</div></section>}
+    {company.length > 0 && <section><div className="section-heading"><h2>{t("companyEvents")}</h2><span>{company.length}</span></div><div className="event-grid">{company.map((event) => <EventCard key={event.event_id} event={event} busy={Boolean(busy)} onOpenSymbol={onOpenSymbol} onResolve={(eventId) => act(`event-${eventId}`, `/events/${eventId}/resolve`)} />)}</div></section>}
     <ConfidencePanel center={confidence} stocks={stocks} busy={Boolean(busy)} onRefresh={(symbol) => act(`confidence-${symbol}`, "/confidence/refresh", { symbol })} />
     <section className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("aiRunHistory")}</h2><p className="panel-subtitle">{center?.prompt_version}</p></div></div><div className="activity-list">{center?.runs.length ? center.runs.map((run) => <div className="activity-row" key={run.run_id}><span className={`tiny-badge ${run.status === "complete" ? "live" : ""}`}>{run.status}</span><span>{run.scope} · {run.model}</span><time>{new Date(run.created_at).toLocaleString()}</time>{run.error && <small className="negative-text">{run.error}</small>}</div>) : <div className="empty-state">{t("noAiRuns")}</div>}</div></section>
   </div>;
@@ -826,7 +992,7 @@ function AppContent({ initialUser, language, setLanguage }: { initialUser: Prism
         {!loading && !error && view === "overview" && overview && <div className="page-section"><Header eyebrow={t("realStoredData")} title={t("researchStored")} copy={t("researchStoredCopy")} />{overview.market.bar_count === 0 ? <EmptyMarket onOpenData={() => setView("data")} /> : <><SummaryCards overview={overview} /><div className="content-grid"><div className="panel"><div className="panel-header"><div><h2 className="panel-title">{t("storedUniverse")}</h2><p className="panel-subtitle">{t("realCrossSection")}</p></div><button className="secondary-button" onClick={() => setView("scanner")}>{t("viewScanner")}</button></div><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} />}</div></>}</div>}
         {!loading && !error && view === "scanner" && <div className="page-section"><Header eyebrow="Massive EOD" title={t("compareReal")} copy={t("compareRealCopy")}><div className="segments">{(["10D", "30D", "90D"] as Horizon[]).map((item) => <button key={item} className={`segment-button ${horizon === item ? "active" : ""}`} onClick={() => setHorizon(item)}>{item}</button>)}</div></Header>{!stocks.length ? <EmptyMarket onOpenData={() => setView("data")} /> : <div className="content-grid"><div className="panel"><StockTable stocks={stocks} active={activeStock} setActive={setActiveStock} horizon={horizon} search={search} /></div>{activeStock && <StockDetail stock={activeStock} horizon={horizon} />}</div>}</div>}
         {!loading && !error && view === "metrics" && <MetricsView stocks={stocks} />}
-        {!loading && !error && view === "events" && <EventsView center={eventCenter} confidence={confidenceCenter} stocks={stocks} reload={load} />}
+        {!loading && !error && view === "events" && <EventsView center={eventCenter} confidence={confidenceCenter} stocks={stocks} reload={load} onOpenSymbol={(symbol) => { const stock = stocks.find((item) => item.symbol === symbol); if (stock) { setActiveStock(stock); setSearch(symbol); setView("scanner"); } }} />}
         {!loading && !error && view === "backtest" && <BacktestView backtests={backtests} run={runBacktest} running={running} />}
         {!loading && !error && view === "data" && <DataView pipeline={pipeline} sync={sync} syncing={syncing} />}
       </main></div>{toast && <div className="toast">{toast}</div>}</div>;

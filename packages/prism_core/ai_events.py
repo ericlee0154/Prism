@@ -11,8 +11,36 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 
-PROMPT_VERSION = "event-research-v0.3"
+PROMPT_VERSION = "event-research-v0.4"
 DEFAULT_EVENT_MODEL = "gpt-5.6-sol"
+
+MarketImpactCategory = Literal[
+    "broad_market",
+    "technology",
+    "semiconductors",
+    "software",
+    "cloud",
+    "artificial_intelligence",
+    "communication_services",
+    "consumer_discretionary",
+    "consumer_staples",
+    "financials",
+    "industrials",
+    "defense",
+    "aerospace",
+    "energy",
+    "materials",
+    "healthcare",
+    "utilities",
+    "real_estate",
+    "transportation",
+    "government_bonds",
+    "interest_rates",
+    "currencies",
+    "commodities",
+    "crypto",
+    "international",
+]
 
 
 class OpenAIQuotaExceeded(RuntimeError):
@@ -28,10 +56,29 @@ class ResearchSourceReference(StrictModel):
     language: Literal["EN", "ZH", "JA", "KO", "OTHER", "UNKNOWN"]
 
 
+class MarketImpactAssessment(StrictModel):
+    magnitude_score: int = Field(ge=1, le=5)
+    breadth: Literal[
+        "single_company",
+        "industry",
+        "sector",
+        "multi_sector",
+        "broad_market",
+        "global_cross_asset",
+    ]
+    direction: Literal["positive", "negative", "mixed", "uncertain"]
+    time_horizons: list[
+        Literal["immediate", "short_term", "medium_term", "long_term"]
+    ]
+    categories: list[MarketImpactCategory]
+    rationale: str
+
+
 class WorldEventTranslationZh(StrictModel):
     title: str
     summary: str
     why_markets_care: str
+    impact_rationale: str
     watch_items: list[str]
 
 
@@ -60,6 +107,7 @@ class WorldEventItem(StrictModel):
     watch_items: list[str]
     importance: int = Field(ge=1, le=5)
     confidence: float = Field(ge=0, le=1)
+    impact: MarketImpactAssessment
     translation_zh: WorldEventTranslationZh
     source_references: list[ResearchSourceReference]
 
@@ -75,6 +123,7 @@ class CompanyEventTranslationZh(StrictModel):
     market_expectations: list[str]
     bullish_scenario: str
     bearish_scenario: str
+    impact_rationale: str
     watch_items: list[str]
 
 
@@ -108,6 +157,7 @@ class CompanyEventItem(StrictModel):
     watch_items: list[str]
     importance: int = Field(ge=1, le=5)
     confidence: float = Field(ge=0, le=1)
+    impact: MarketImpactAssessment
     translation_zh: CompanyEventTranslationZh
     source_references: list[ResearchSourceReference]
 
@@ -153,6 +203,21 @@ class ConfidenceResearchFeed(StrictModel):
     as_of: date
     symbol: str
     evidence: list[ConfidenceEvidenceItem]
+
+
+class InstrumentClassificationItem(StrictModel):
+    symbol: str
+    display_name: str
+    instrument_type: Literal["equity", "etf", "other"]
+    categories: list[MarketImpactCategory]
+    summary: str
+    summary_zh: str
+    source_references: list[ResearchSourceReference]
+
+
+class InstrumentClassificationFeed(StrictModel):
+    as_of: date
+    instruments: list[InstrumentClassificationItem]
 
 
 @dataclass(frozen=True)
@@ -209,6 +274,11 @@ class OpenAIEventResearchProvider:
                 "Every event must include at least one source_references entry whose exact URL "
                 "was retrieved in this run. Label each page's actual source language as EN, ZH, "
                 "JA, KO, OTHER, or UNKNOWN. "
+                "Assess plausible market impact with a 1-5 magnitude, breadth, direction, "
+                "time horizons, and only the fixed schema categories. Magnitude measures "
+                "potential market consequence; breadth separately measures how widely it may "
+                "transmit. Keep the rationale probabilistic and translate it faithfully into "
+                "translation_zh.impact_rationale. "
                 "Return no event when evidence or dates are too weak. "
                 "Separate confirmed facts from market interpretation. "
                 "Do not invent prices, forecasts, consensus estimates, or dates."
@@ -247,6 +317,10 @@ class OpenAIEventResearchProvider:
                 "Every event must include at least one source_references entry whose exact URL "
                 "was retrieved in this run. Label each page's actual source language as EN, ZH, "
                 "JA, KO, OTHER, or UNKNOWN. "
+                "Assess plausible market impact with a 1-5 magnitude, breadth, direction, "
+                "time horizons, and only the fixed schema categories. Keep the rationale "
+                "probabilistic and translate it faithfully into "
+                "translation_zh.impact_rationale. "
                 "Return no event when evidence is insufficient. "
                 "Market expectations and scenarios must be clearly labeled analysis, not fact. "
                 "Do not invent prices, dates, consensus estimates, or results."
@@ -257,6 +331,35 @@ class OpenAIEventResearchProvider:
                 f"The symbol field must be exactly {ticker}. Include up to 12 events."
             ),
             max_tool_calls=4,
+        )
+
+    def instrument_classifications(
+        self,
+        *,
+        symbols: list[str],
+        as_of: date,
+    ) -> AIResearchResult:
+        cleaned = sorted({symbol.strip().upper() for symbol in symbols if symbol.strip()})
+        return self._request(
+            schema_model=InstrumentClassificationFeed,
+            schema_name="instrument_classification_feed",
+            instructions=(
+                "Role: grounded market-exposure classifier. Use live web search and prefer "
+                "official company, fund issuer, exchange, regulator, or investor-relations "
+                "pages. Classify each requested tracked symbol into only the fixed schema "
+                "categories based on its documented business or fund exposure. For an ETF, "
+                "classify the portfolio exposure rather than the asset manager. Provide concise "
+                "English and faithful Traditional Chinese summaries. Every instrument must "
+                "include at least one exact source_references URL retrieved in this run and the "
+                "page's actual language. Do not infer a position size, portfolio weight, market "
+                "view, recommendation, or exposure category that the sources do not support. "
+                "Omit a symbol when reliable public evidence is insufficient."
+            ),
+            input_text=(
+                f"As of {as_of.isoformat()}, classify exactly these locally tracked symbols: "
+                f"{', '.join(cleaned)}. Return at most one item per symbol."
+            ),
+            max_tool_calls=5,
         )
 
     def event_outcome(
@@ -465,6 +568,23 @@ def _retain_grounded_items(
     payload: SchemaT,
     sources: list[dict[str, str]],
 ) -> SchemaT:
+    if hasattr(payload, "instruments"):
+        grounded_instruments = []
+        for item in getattr(payload, "instruments"):
+            matched_references = _matched_source_references(
+                item.source_references,
+                sources,
+            )
+            if matched_references:
+                grounded_instruments.append(
+                    item.model_copy(
+                        update={"source_references": matched_references}
+                    )
+                )
+        return payload.model_copy(
+            update={"instruments": grounded_instruments}
+        )
+
     if hasattr(payload, "evidence"):
         grounded_evidence = []
         for item in getattr(payload, "evidence"):

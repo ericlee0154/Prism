@@ -22,6 +22,8 @@ test("builds the local real-data Prism research workspace", async () => {
   assert.match(app, /Codex CLI/);
   assert.match(app, /來源語言/);
   assert.match(app, /View original/);
+  assert.match(app, /Potential market impact/);
+  assert.match(app, /Tracked-symbol classification/);
   assert.match(app, /language: \{ zh: "EN", en: "中文" \}/);
   assert.doesNotMatch(app, /demo-seed|initialLedger|const stocks/);
   assert.doesNotMatch(app, /codex-preview|Your site is taking shape|Building your site/i);

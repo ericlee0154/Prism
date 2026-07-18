@@ -298,6 +298,13 @@ class PrismService:
             prompt_version=PROMPT_VERSION,
             limit=limit,
         )
+        classifications = self.repository.list_instrument_classifications(
+            symbols=self.repository.list_symbols(),
+        )
+        events = [
+            _event_with_portfolio_matches(event, classifications)
+            for event in events
+        ]
         today = date.today()
         due_count = sum(
             event["scope"] == "company"
@@ -315,6 +322,98 @@ class PrismService:
             "due_event_count": due_count,
             "events": events,
             "runs": self.repository.list_event_runs(),
+            "portfolio_classifications": classifications,
+            "classification_coverage": _classification_coverage(
+                self.repository.list_symbols(),
+                classifications,
+            ),
+        }
+
+    def instrument_classification_center(self) -> dict:
+        symbols = self.repository.list_symbols()
+        classifications = self.repository.list_instrument_classifications(
+            symbols=symbols,
+        )
+        return {
+            "provider": self.ai_provider_name,
+            "provider_configured": self.ai_configured,
+            "model": self.ai_model,
+            "prompt_version": PROMPT_VERSION,
+            "items": classifications,
+            "coverage": _classification_coverage(symbols, classifications),
+        }
+
+    def refresh_instrument_classifications(self) -> dict:
+        self._require_ai_provider()
+        assert self.ai_provider is not None
+        symbols = self.repository.list_symbols()
+        if not symbols:
+            raise ValueError("No tracked symbols are stored")
+        run_id = self.repository.begin_event_run(
+            scope="instrument_classification",
+            symbols=symbols,
+            window_start=None,
+            window_end=date.today().isoformat(),
+            provider=self.ai_provider.name,
+            model=self.ai_provider.model,
+            prompt_version=PROMPT_VERSION,
+        )
+        try:
+            research = self.ai_provider.instrument_classifications(
+                symbols=symbols,
+                as_of=date.today(),
+            )
+            tracked = set(symbols)
+            stored: list[str] = []
+            for classification_model in research.payload.instruments:
+                item = classification_model.model_dump(mode="json")
+                ticker = item["symbol"].upper()
+                if ticker not in tracked:
+                    continue
+                sources = _sources_for_references(
+                    item["source_references"],
+                    research.sources,
+                )
+                if not sources:
+                    continue
+                self.repository.upsert_instrument_classification(
+                    {
+                        **item,
+                        "symbol": ticker,
+                        "sources": sources,
+                        "provider": self.ai_provider.name,
+                        "model": research.model,
+                        "prompt_version": PROMPT_VERSION,
+                        "run_id": run_id,
+                    }
+                )
+                stored.append(ticker)
+            self.repository.finish_event_run(
+                run_id,
+                status="complete",
+                response_id=research.response_id,
+                usage=research.usage,
+            )
+        except OpenAIQuotaExceeded as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="quota",
+                error=str(error),
+            )
+            raise
+        except Exception as error:
+            self.repository.finish_event_run(
+                run_id,
+                status="failed",
+                error=str(error),
+            )
+            raise
+        center = self.instrument_classification_center()
+        return {
+            "run_id": run_id,
+            "status": "complete",
+            "stored": sorted(stored),
+            **center,
         }
 
     def confidence_center(
@@ -839,6 +938,7 @@ class PrismService:
             "watch_items": item["watch_items"],
             "expectations": {
                 "why_markets_care": item["why_markets_care"],
+                "impact_assessment": item["impact"],
                 "translation_zh": item["translation_zh"],
             },
             "actual": {},
@@ -890,6 +990,7 @@ class PrismService:
                 "market_expectations": item["market_expectations"],
                 "bullish_scenario": item["bullish_scenario"],
                 "bearish_scenario": item["bearish_scenario"],
+                "impact_assessment": item["impact"],
                 "translation_zh": item["translation_zh"],
             },
             "actual": {},
@@ -1247,6 +1348,66 @@ def _sources_for_references(
             }
         )
     return matched
+
+
+def _classification_coverage(
+    symbols: list[str],
+    classifications: list[dict[str, Any]],
+) -> dict[str, Any]:
+    tracked = sorted({symbol.upper() for symbol in symbols})
+    classified = {
+        item["symbol"].upper()
+        for item in classifications
+    }
+    return {
+        "tracked_count": len(tracked),
+        "classified_count": len(classified.intersection(tracked)),
+        "unclassified_symbols": [
+            symbol for symbol in tracked if symbol not in classified
+        ],
+    }
+
+
+def _event_with_portfolio_matches(
+    event: dict[str, Any],
+    classifications: list[dict[str, Any]],
+) -> dict[str, Any]:
+    impact = event.get("expectations", {}).get("impact_assessment", {})
+    impact_categories = {
+        str(category)
+        for category in impact.get("categories", [])
+        if category
+    }
+    matches: list[dict[str, Any]] = []
+    for classification in classifications:
+        ticker = classification["symbol"].upper()
+        profile_categories = {
+            str(category)
+            for category in classification.get("categories", [])
+            if category
+        }
+        shared = sorted(impact_categories.intersection(profile_categories))
+        direct = bool(event.get("symbol") == ticker)
+        if shared or direct:
+            matches.append(
+                {
+                    "symbol": ticker,
+                    "display_name": classification["display_name"],
+                    "matched_categories": shared,
+                    "direct_company_match": direct,
+                }
+            )
+    matches.sort(
+        key=lambda item: (
+            not item["direct_company_match"],
+            -len(item["matched_categories"]),
+            item["symbol"],
+        )
+    )
+    return {
+        **event,
+        "portfolio_matches": matches,
+    }
 
 
 def _evidence_confidence_score(evidence: list[dict[str, Any]]) -> float:

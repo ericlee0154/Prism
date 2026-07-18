@@ -238,6 +238,23 @@ def list_events(
     return service.event_center(scope=scope, symbol=symbol, limit=limit)
 
 
+@app.get("/api/v1/instruments/classifications")
+def instrument_classifications(service: Service) -> dict:
+    return service.instrument_classification_center()
+
+
+@app.post("/api/v1/instruments/classifications/refresh", status_code=201)
+def refresh_instrument_classifications(service: Service) -> dict:
+    try:
+        return service.refresh_instrument_classifications()
+    except OpenAIQuotaExceeded as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
 @app.post("/api/v1/events/world/refresh", status_code=201)
 def refresh_world_events(
     request: WorldEventRefreshRequest,

@@ -61,6 +61,10 @@
   exposing the Massive credential.
 - [x] Store English and Traditional Chinese event research together, with
   per-source language labels and original-page links.
+- [x] Separate potential impact magnitude from market breadth and fixed
+  sector/theme categories.
+- [x] Source and store tracked-symbol classifications, then link events through
+  explicit category intersections without guessed exposure.
 - [x] Track scheduled earnings and major company announcements inside forecast
   horizons.
 - [x] Append sourced post-event outcomes without rewriting historical

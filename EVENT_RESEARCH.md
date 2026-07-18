@@ -27,6 +27,30 @@ always keeps a separate “View original” link. Older stored events remain
 unchanged and visibly report that a Chinese translation is unavailable until a
 new sourced refresh replaces them.
 
+## Market-impact taxonomy and tracked-symbol linkage
+
+Each event stores two separate impact dimensions:
+
+- `magnitude_score` from 1 (limited) to 5 (systemic), representing the
+  plausible size of the market consequence.
+- `breadth`, representing whether transmission is limited to one company,
+  industry, sector, multiple sectors, the broad market, or global cross-asset
+  markets.
+
+The record also keeps a probabilistic rationale, possible direction, time
+horizons, and fixed machine-readable categories such as broad market,
+technology, semiconductors, software, financials, defense, energy, rates,
+currencies, and commodities. These are research labels, not predictions of
+realized returns.
+
+Tracked symbols are classified separately from sourced company, fund-issuer,
+exchange, or regulator pages and stored in `instrument_classifications`.
+An event links to a tracked symbol only when their stored categories intersect
+or the event is directly about that company. Missing classifications and empty
+intersections remain empty; Prism does not guess portfolio exposure. Historical
+classification runs retain the provider, model, prompt version, sources, and
+usage in the same research-run lineage.
+
 ## Event lifecycle
 
 ```text
