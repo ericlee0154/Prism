@@ -87,28 +87,113 @@ Open the local URL printed by Vinext. In **Data & pipeline**, enter the exact
 symbols and date range you want, then synchronize. Prism does not create a
 default symbol universe.
 
-## Current metrics
+## Metrics and scoring
 
-The `price-core-v0.1` snapshot derives:
+`price-core-v0.2` is a deterministic price-research baseline, not a trained or
+calibrated return model. Every raw metric is calculated from split-adjusted
+daily OHLCV bars whose observation time and `available_at` are no later than
+the declared cutoff. Insufficient history, a missing aligned SPY observation,
+or a denominator that the metric contract declares undefined produces `null`.
+Mathematically meaningful no-movement results can still be zero where the
+catalog explicitly says so; Prism never substitutes zero, a neutral score, or
+a demo value for missing data. The catalog exposed in the UI is generated from
+the same definitions used by the calculator and records each metric's formula,
+inputs, trading-session window, minimum observations, price basis, `ddof`,
+cutoff rule, and null/zero-denominator policy.
 
-- 5-session return
-- 20-session return
-- annualized 20-session realized volatility
-- 20-session volume z-score
-- distance from the 20-session moving average
-- trailing 60-session drawdown
+The v0.2 raw catalog contains:
 
-The scanner ranks only the symbols currently present in DuckDB. The
-walk-forward baseline evaluates 10, 30, or 90 future sessions at five-session
-rebalance intervals and reports observation count, Spearman IC, top-minus-
-bottom spread, and directional accuracy. Results exclude fees, slippage, taxes,
-borrow costs, and survivorship corrections.
+- close-to-close returns over 5, 20, and 60 sessions;
+- annualized realized volatility and downside semivolatility over 20 and 60
+  sessions, plus the 20D/60D volatility ratio;
+- an inclusive 20-session volume z-score, a current-volume surprise against
+  the preceding 20 sessions, and 20-session up/down volume balance;
+- distance from MA20 and MA50, 60-session drawdown, 20D and 60D trend
+  efficiency, and position in the 60-session closing-price range;
+- 20-session median dollar volume as a liquidity diagnostic; and
+- 60-session beta to SPY plus 20D and 60D beta-adjusted price returns.
+
+`cross-sectional-alpha-risk-v0.2` is the one scoring implementation used by
+both the current scanner and historical walk-forward evaluation. A scanner
+snapshot records the exact stored candidate universe, symbol-list hash, common
+as-of session, common availability cutoff, eligible and excluded symbols, and
+per-horizon score coverage. SPY is a benchmark and is not ranked as a candidate.
+At least three complete candidates are required.
+
+For each usable metric, Prism computes a tie-aware cross-sectional midrank
+percentile and maps it from 0–100 to -1–1. Alpha and observed price risk are
+kept separate:
+
+- The alpha baseline has two equal-weight factor buckets. Market-adjusted
+  momentum uses beta-adjusted SPY-relative return. Trend quality averages trend
+  efficiency, 60-session range position, and distance from the applicable
+  moving average. The 10D/30D models use 20D beta-adjusted return; the 90D model
+  uses 60D beta-adjusted return. The 10D model uses 20D trend efficiency and
+  MA20, while 30D/90D use MA50 and 90D uses 60D trend efficiency.
+- The risk baseline has three equal-weight buckets: realized/downside
+  volatility level, 60-session drawdown severity, and 20D/60D volatility
+  expansion. The volatility pair shares one bucket so correlated measures do
+  not receive two independent weights. Higher risk means higher observed price
+  risk; it is not treated as lower expected return.
+
+Every bucket first averages its signed metric ranks, then the bucket weights
+are applied. A model is `null` if any required bucket is unavailable. Raw
+alpha/risk values remain on -1–1 and receive separate 0–100 cross-sectional
+ranks for display; these ranks are relative positions in the stored universe,
+not probabilities or confidence calibration.
+
+Sealed v0.2 research predictions therefore use relative-outperformance /
+relative-underperformance labels. Their database `confidence` is `null` until
+forward calibration exists; rank extremity is retained separately in the
+immutable input snapshot and is explicitly not presented as a probability.
+
+The scanner also reports two distinct metric contexts. A cross-sectional
+percentile compares symbols at the same snapshot cutoff. A historical
+percentile compares the current metric only with strictly earlier point-in-time
+values for that symbol, using at most the prior 252 endpoints and requiring at
+least 60 usable observations. Neither context is a claim of predictive
+validity, and a percentile is left `null` when its comparison set is too small.
+
+## Walk-forward diagnostics
+
+The v0.2 walk-forward engine rebuilds the same raw metrics and the same
+cross-sectional alpha/risk scores at each historical evaluation cutoff. It
+requires aligned SPY data and at least three candidate symbols, evaluates
+10-, 30-, or 90-session horizons at five-session rebalance intervals, and
+records the requested-universe hash, eligible counts, coverage, and exclusion
+reasons.
+
+The diagnostic close-to-close label remains visible, but the primary research
+label is:
+
+```text
+(stock close[t+h] / stock open[t+1] - 1)
+-
+(SPY close[t+h] / SPY open[t+1] - 1)
+```
+
+Results include date-level Spearman IC, median and positive-IC summaries,
+top-minus-bottom SPY-excess spread, directional accuracy versus its majority
+baseline, forward maximum drawdown/gain, risk IC against forward realized
+volatility and drawdown severity, factor ablation, and factor-correlation
+diagnostics. These are diagnostics for rejecting or revising a formula, not
+evidence that the baseline is profitable.
+
+Important limits remain: forward windows overlap and therefore are not
+independent observations; the universe consists of symbols currently stored
+in DuckDB and is not yet protected against survivorship bias; returns use
+split-adjusted prices and exclude dividends; and results exclude fees,
+slippage, taxes, borrow costs, and market-impact assumptions. Point-in-time
+sector-relative returns, total-return data, and AI-driven formula or weight
+optimization are deliberately deferred until their data lineage and
+out-of-sample validation can be made auditable. AI event research does not
+change the v0.2 formulas.
 
 The **Range metrics** screen provides synchronized date inputs and a draggable
 two-ended timeline. Any symbol or range change recalculates automatically, and
 the complete interval can be shifted earlier or later by a chosen number of
-days for continuity checks. It calculates a point-in-time metric snapshot at
-the chosen end date and builds 10-, 30-, and 90-session historical-analog
+days for continuity checks. It calculates the v0.2 point-in-time raw metric
+snapshot at the chosen end date and builds 10-, 30-, and 90-session historical-analog
 forecasts using only earlier outcomes inside the selected interval. If fewer
 than ten eligible analogs exist, no forecast values are produced.
 

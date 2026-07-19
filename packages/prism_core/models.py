@@ -39,6 +39,14 @@ class MetricDefinition:
     required_inputs: tuple[str, ...]
     output_type: str
     unit: str
+    window_basis: str
+    price_basis: str
+    includes_current_session: bool
+    minimum_observations: int
+    ddof: int | None
+    null_policy: str
+    zero_denominator_policy: str
+    calculation_cutoff: str
     version: str
 
 
@@ -49,7 +57,7 @@ class MetricSnapshot:
     prediction_cutoff: datetime
     max_source_available_at: datetime
     metric_version: str
-    values: dict[str, float]
+    values: dict[str, float | None]
 
     def assert_temporal_integrity(self) -> None:
         if self.max_source_available_at > self.prediction_cutoff:

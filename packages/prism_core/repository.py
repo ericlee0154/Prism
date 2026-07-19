@@ -235,6 +235,11 @@ class PrismRepository:
             )
             """
         )
+        # v0.2 no longer disguises cross-sectional rank extremity as calibrated
+        # confidence. Existing rows remain intact; new uncalibrated rows store NULL.
+        self.connection.execute(
+            "ALTER TABLE predictions ALTER COLUMN confidence DROP NOT NULL"
+        )
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS formula_experiments (

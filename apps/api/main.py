@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from packages.prism_core.ai_events import OpenAIQuotaExceeded
 from packages.prism_core.forecast_surface import ForecastSurfaceJobManager
@@ -51,7 +51,7 @@ app = FastAPI(
         "Local-first endpoints for point-in-time market metrics, formula research, "
         "and immutable forward predictions."
     ),
-    version="0.1.0",
+    version="0.2.1",
     lifespan=lifespan,
 )
 
@@ -68,9 +68,10 @@ Horizon = Literal["10D", "30D", "90D"]
 
 
 class SealPredictionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     symbol: str = Field(min_length=1, max_length=12)
     horizon: Horizon = "30D"
-    formula_version: str = Field(default="core-v0.1", min_length=1, max_length=80)
 
 
 class SyncRequest(BaseModel):
@@ -156,12 +157,13 @@ def scanner(
     horizon: Horizon = Query(default="30D"),
     search: str = Query(default="", max_length=80),
 ) -> dict:
-    summary = service.repository.market_summary()
+    result = service.scan_with_universe(horizon=horizon, search=search)
     return {
+        "schema_version": "scanner-v0.2",
         "horizon": horizon,
-        "data_cutoff": summary["data_cutoff"],
+        "data_cutoff": result["universe"]["data_cutoff"],
         "provider": service.provider_name,
-        "items": service.scan(horizon=horizon, search=search),
+        **result,
     }
 
 
@@ -233,7 +235,6 @@ def seal_prediction(request: SealPredictionRequest, service: Service) -> dict:
         return service.seal_prediction(
             symbol=symbol,
             horizon=request.horizon,
-            formula_version=request.formula_version,
         )
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error

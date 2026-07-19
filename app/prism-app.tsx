@@ -27,15 +27,27 @@ type Stock = {
   data_cutoff: string;
   source: string;
   metric_version: string;
-  metrics: Record<string, number>;
-  momentum: number;
-  relativeStrength: number;
-  trendQuality: number;
-  volumeConfirmation: number;
-  volatility: number;
-  score10: number;
-  score30: number;
-  score90: number;
+  metrics: Record<string, number | null>;
+  metricPercentiles: Record<string, number | null>;
+  historicalPercentiles: Record<string, number | null>;
+  momentum: number | null;
+  marketAdjustedMomentum: number | null;
+  relativeStrength: number | null;
+  trendQuality: number | null;
+  volumeConfirmation: number | null;
+  volatility: number | null;
+  score10: number | null;
+  score30: number | null;
+  score90: number | null;
+  risk10: number | null;
+  risk30: number | null;
+  risk90: number | null;
+  alphaScore10: number | null;
+  alphaScore30: number | null;
+  alphaScore90: number | null;
+  riskScore10: number | null;
+  riskScore30: number | null;
+  riskScore90: number | null;
   signal: string;
   dataQuality: number;
 };
@@ -220,7 +232,7 @@ type RangeAnalysis = {
   data_cutoff: string;
   source: string;
   metric_version: string;
-  metrics: Record<string, number>;
+  metrics: Record<string, number | null>;
   coverage_warnings: string[];
   forecasts: Record<string, Forecast>;
   forecast_horizon_ends: Record<string, string>;
@@ -237,39 +249,45 @@ type MetricDefinition = {
   required_inputs: string[];
   output_type: string;
   unit: string;
+  window_basis: string;
+  price_basis: string;
+  includes_current_session: boolean;
+  minimum_observations: number;
+  ddof: number | null;
+  null_policy: string;
+  zero_denominator_policy: string;
+  calculation_cutoff: string;
   version: string;
 };
 type ScoreTerm = {
-  key: string;
   metric: string;
+  direction: number;
+  label: string;
+  label_zh: string;
+};
+type ScoreFactor = {
+  key: string;
   weight: number;
   label: string;
   label_zh: string;
   description: string;
   description_zh: string;
-  transform: string;
-  invert_percentile: boolean;
-};
-type ScoreHorizon = {
-  horizon: string;
-  metric: string | null;
-  amplitude: number;
-  scale: number;
-  label: string;
-  label_zh: string;
-  formula: string;
+  terms: ScoreTerm[];
 };
 type ScoreModel = {
   id: string;
+  horizon: string;
+  role: string;
   version: string;
   label: string;
   label_zh: string;
   description: string;
   description_zh: string;
   formula: string;
-  base_formula?: string;
-  terms: ScoreTerm[];
-  horizons: ScoreHorizon[];
+  normalization: string;
+  minimum_cross_section: number;
+  missing_policy: string;
+  factors: ScoreFactor[];
 };
 type MetricCatalog = {
   items: MetricDefinition[];
@@ -321,9 +339,47 @@ type Backtest = {
   symbol_count: number;
   observation_count: number;
   evaluation_dates: number;
+  candidate_evaluation_dates?: number;
+  metric_version?: string;
+  score_version?: string;
+  label_version?: string;
   mean_spearman_ic: number | null;
+  median_spearman_ic?: number | null;
+  positive_ic_date_rate?: number | null;
   mean_top_bottom_spread: number | null;
+  mean_spread_bucket_size?: number | null;
   direction_accuracy: number | null;
+  direction_baseline?: number | null;
+  direction_accuracy_delta?: number | null;
+  risk_forward_volatility_ic?: number | null;
+  risk_drawdown_severity_ic?: number | null;
+  mean_future_max_drawdown?: number | null;
+  mean_future_max_gain?: number | null;
+  universe?: {
+    definition_version: string;
+    benchmark_symbols: string[];
+    requested_symbols: string[];
+    requested_count: number;
+    symbol_list_hash: string;
+    eligible_evaluation_dates?: number;
+    coverage_ratio?: number;
+    eligible_count_min?: number;
+    eligible_count_median?: number;
+    eligible_count_max?: number;
+    excluded_reason_counts?: Record<string, number>;
+  };
+  factor_ablation?: {
+    omitted_factor: string;
+    mean_spearman_ic: number | null;
+    evaluation_dates: number;
+    observation_count: number;
+  }[];
+  factor_correlations?: {
+    left_factor: string;
+    right_factor: string;
+    mean_spearman_correlation: number | null;
+    evaluation_dates: number;
+  }[];
   warnings: string[];
   result?: Omit<Backtest, "backtest_id" | "created_at" | "result">;
 };
@@ -463,12 +519,19 @@ const translations = {
   latestClose: { zh: "最新收盤", en: "Latest close" },
   return5: { zh: "5 日報酬", en: "5-session return" },
   return20: { zh: "20 日報酬", en: "20-session return" },
+  return60: { zh: "60 日報酬", en: "60-session return" },
   volatility20: { zh: "20 日年化波動", en: "20-session volatility" },
   drawdown60: { zh: "60 日回撤", en: "60-session drawdown" },
   score: { zh: "分數", en: "score" },
+  alphaRank: { zh: "Alpha 排名", en: "Alpha rank" },
+  riskRank: { zh: "風險排名", en: "Risk rank" },
+  higherRisk: { zh: "越高代表觀察風險越高", en: "Higher means more observed risk" },
+  betaAdjustedReturn: { zh: "Beta 調整報酬", en: "Beta-adjusted return" },
+  historicalPercentile: { zh: "自身歷史百分位", en: "Own-history percentile" },
+  crossSectionPercentile: { zh: "當期橫截面百分位", en: "Current cross-sectional percentile" },
   rows: { zh: "筆數", en: "Rows" },
   noMatch: { zh: "沒有符合的已儲存股票。", en: "No stored symbols match this filter." },
-  relativeScore: { zh: "相對 metric 分數", en: "relative metric score" },
+  relativeScore: { zh: "Alpha 橫截面排名", en: "Cross-sectional alpha rank" },
   stored: { zh: "已儲存", en: "stored" },
   crossRanks: { zh: "橫截面百分位", en: "Cross-sectional ranks" },
   momentum20: { zh: "20 日動能", en: "20-session momentum" },
@@ -561,9 +624,20 @@ const translations = {
     zh: "以下公式與權重由後端實際計算所迭代的同一組定義產生；前端不另外保存權重副本。",
     en: "These formulas and weights are serialized from the same definitions iterated by the backend calculations; the frontend keeps no separate weight copy.",
   },
+  windowBasis: { zh: "視窗基準", en: "Window basis" },
+  priceBasis: { zh: "價格基準", en: "Price basis" },
+  currentSession: { zh: "包含當期", en: "Includes current session" },
+  minimumObservations: { zh: "最低觀察數", en: "Minimum observations" },
+  nullPolicy: { zh: "缺值規則", en: "Null policy" },
+  zeroDenominatorPolicy: { zh: "零分母規則", en: "Zero-denominator policy" },
+  calculationCutoff: { zh: "計算 cutoff", en: "Calculation cutoff" },
+  normalization: { zh: "正規化", en: "Normalization" },
+  missingPolicy: { zh: "缺值處理", en: "Missing policy" },
+  minimumCrossSection: { zh: "最低橫截面數", en: "Minimum cross-section" },
+  factorTerms: { zh: "組成指標", en: "Factor terms" },
   scoreDistinction: {
-    zh: "掃描分數與 Walk-forward 特徵分數用途不同，請勿直接互相比較。",
-    en: "The scanner score and walk-forward feature score serve different purposes and are not directly comparable.",
+    zh: "即時掃描與 Walk-forward 回測使用同一組 horizon-specific Alpha／Risk 定義與正規化程式。",
+    en: "The live scanner and walk-forward backtest use the same horizon-specific alpha/risk definitions and normalization code.",
   },
   horizonAdjustment: { zh: "期間調整", en: "Horizon adjustment" },
   noMetricCatalog: { zh: "Metrics 方法資料目前無法取得；不顯示替代內容。", en: "Metric methodology is unavailable; no substitute content is shown." },
@@ -699,8 +773,25 @@ const translations = {
     en: "Synchronize sufficient history across several symbols, then run the first walk-forward backtest.",
   },
   meanIc: { zh: "平均 Spearman IC", en: "Mean Spearman IC" },
-  spread: { zh: "Top-bottom spread", en: "Top-bottom spread" },
+  medianIc: { zh: "中位 Spearman IC", en: "Median Spearman IC" },
+  positiveIcRate: { zh: "正 IC 日期比例", en: "Positive-IC date rate" },
+  spread: { zh: "高低排名組報酬差", en: "Top/bottom ranked-group spread" },
+  averageBucketSize: { zh: "平均組別檔數", en: "Average group size" },
   directionAccuracy: { zh: "方向準確率", en: "Direction accuracy" },
+  directionBaseline: { zh: "多數類別基準", en: "Majority-class baseline" },
+  directionDelta: { zh: "相對基準增量", en: "Delta vs baseline" },
+  riskVolatilityIc: { zh: "風險分數 vs 未來波動 IC", en: "Risk vs forward-volatility IC" },
+  riskDrawdownIc: { zh: "風險分數 vs 未來回撤 IC", en: "Risk vs forward-drawdown IC" },
+  backtestCoverage: { zh: "回測覆蓋", en: "Backtest coverage" },
+  evaluationDates: { zh: "有效評估日", en: "Eligible evaluation dates" },
+  candidateDates: { zh: "候選評估日", en: "Candidate evaluation dates" },
+  versionLedger: { zh: "版本帳本", en: "Version ledger" },
+  labelVersion: { zh: "標籤版本", en: "Label version" },
+  scoreVersion: { zh: "分數版本", en: "Score version" },
+  factorAblation: { zh: "因子移除診斷", en: "Factor ablation diagnostics" },
+  omittedFactor: { zh: "移除因子", en: "Omitted factor" },
+  factorCorrelation: { zh: "因子相關性", en: "Factor correlation" },
+  factorPair: { zh: "因子配對", en: "Factor pair" },
   observations: { zh: "觀察值", en: "Observations" },
   forecastSurface: { zh: "3D Forecast 歷史驗證", en: "3D forecast history validation" },
   forecastSurfaceCopy: {
@@ -802,7 +893,24 @@ const isoDate = (value: string) => value.slice(0, 10);
 const dateToDay = (value: string) => Math.floor(new Date(`${isoDate(value)}T12:00:00Z`).getTime() / 86_400_000);
 const dayToDate = (value: number) => new Date(value * 86_400_000).toISOString().slice(0, 10);
 const formatPercent = (value: number | null | undefined, digits = 2) => value == null ? "—" : `${(value * 100).toFixed(digits)}%`;
-const scoreFor = (stock: Stock, horizon: Horizon) => horizon === "10D" ? stock.score10 : horizon === "30D" ? stock.score30 : stock.score90;
+const formatNumber = (value: number | null | undefined, digits = 1) => value == null ? "—" : value.toFixed(digits);
+const formatRank = (value: number | null | undefined) => value == null ? "—" : `${value.toFixed(1)}p`;
+const formatPrice = (value: number | null | undefined) => value == null ? "—" : `$${value.toFixed(2)}`;
+const formatMetricValue = (definition: MetricDefinition | undefined, value: number | null | undefined) => {
+  if (value == null) return "—";
+  if (definition?.unit === "decimal_return" || definition?.unit === "annualized_decimal") return formatPercent(value);
+  if (definition?.unit === "usd") return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 }).format(value);
+  return value.toFixed(3);
+};
+const scoreFor = (stock: Stock, horizon: Horizon): number | null => horizon === "10D" ? stock.score10 : horizon === "30D" ? stock.score30 : stock.score90;
+const riskFor = (stock: Stock, horizon: Horizon): number | null => horizon === "10D" ? stock.risk10 : horizon === "30D" ? stock.risk30 : stock.risk90;
+const rawAlphaFor = (stock: Stock, horizon: Horizon): number | null => horizon === "10D" ? stock.alphaScore10 : horizon === "30D" ? stock.alphaScore30 : stock.alphaScore90;
+const rawRiskFor = (stock: Stock, horizon: Horizon): number | null => horizon === "10D" ? stock.riskScore10 : horizon === "30D" ? stock.riskScore30 : stock.riskScore90;
+const scoreTone = (value: number | null | undefined, risk = false) => {
+  if (value == null) return "neutral";
+  if (risk) return value >= 60 ? "negative" : value < 40 ? "positive" : "neutral";
+  return value >= 60 ? "positive" : value < 40 ? "negative" : "neutral";
+};
 
 const marketCategoryLabels: Record<string, { zh: string; en: string }> = {
   broad_market: { zh: "總體市場", en: "Broad market" },
@@ -1025,18 +1133,28 @@ function MetricsMethodology({ catalog }: { catalog: MetricCatalog | null }) {
         <p>{language === "zh" ? metric.description_zh : metric.description}</p>
         <div className="formula-block"><span>{t("formula")}</span><code>{metric.formula}</code></div>
         <div className="metric-definition-meta"><span>{t("inputs")}</span><strong className="mono">{metric.required_inputs.join(", ")}</strong></div>
+        <div className="metric-definition-meta"><span>{t("windowBasis")}</span><strong className="mono">{metric.window_basis}</strong></div>
+        <div className="metric-definition-meta"><span>{t("priceBasis")}</span><strong className="mono">{metric.price_basis}</strong></div>
+        <div className="metric-definition-meta"><span>{t("minimumObservations")}</span><strong className="mono">{metric.minimum_observations}</strong></div>
+        <div className="metric-definition-meta"><span>{t("currentSession")}</span><strong>{metric.includes_current_session ? (language === "zh" ? "是" : "Yes") : (language === "zh" ? "否" : "No")}</strong></div>
+        <div className="metric-definition-meta"><span>ddof</span><strong className="mono">{metric.ddof ?? "—"}</strong></div>
+        <div className="metric-definition-meta"><span>{t("nullPolicy")}</span><strong className="mono">{metric.null_policy}</strong></div>
+        <div className="metric-definition-meta"><span>{t("zeroDenominatorPolicy")}</span><strong className="mono">{metric.zero_denominator_policy}</strong></div>
+        <div className="metric-definition-meta"><span>{t("calculationCutoff")}</span><strong className="mono">{metric.calculation_cutoff}</strong></div>
       </article>)}</div>
     </section>
     <section className="panel methodology-panel">
       <div className="panel-header"><div><h2 className="panel-title">{t("scoreModels")}</h2><p className="panel-subtitle">{t("scoreDistinction")}</p></div></div>
       <div className="score-model-list">{catalog.score_models.map((model) => <article className="score-model-card" key={model.id}>
-        <div className="score-model-heading"><div><h3>{language === "zh" ? model.label_zh : model.label}</h3><p>{language === "zh" ? model.description_zh : model.description}</p></div><span className="tiny-badge">{model.version}</span></div>
-        <div className="formula-block"><span>{t("formula")}</span><code>{model.formula}</code>{model.base_formula && <code>{model.base_formula}</code>}</div>
-        <div className="weight-table">{model.terms.map((term) => <div className="weight-term" key={term.key}>
-          <div><strong>{language === "zh" ? term.label_zh : term.label}</strong><code>{term.key}</code><p>{language === "zh" ? term.description_zh : term.description}</p></div>
-          <span className={`weight-chip ${term.weight < 0 ? "negative" : ""}`}>{t("weight")} {(term.weight * 100).toFixed(0)}%</span>
+        <div className="score-model-heading"><div><h3>{language === "zh" ? model.label_zh : model.label}</h3><p>{language === "zh" ? model.description_zh : model.description}</p></div><div className="note-tags"><span className="tiny-badge">{model.horizon}</span><span className="tiny-badge">{model.role}</span><span className="tiny-badge">{model.version}</span></div></div>
+        <div className="formula-block"><span>{t("formula")}</span><code>{model.formula}</code></div>
+        <div className="metric-definition-meta"><span>{t("normalization")}</span><strong className="mono">{model.normalization}</strong></div>
+        <div className="metric-definition-meta"><span>{t("minimumCrossSection")}</span><strong className="mono">{model.minimum_cross_section}</strong></div>
+        <div className="metric-definition-meta"><span>{t("missingPolicy")}</span><strong className="mono">{model.missing_policy}</strong></div>
+        <div className="weight-table">{model.factors.map((factor) => <div className="weight-term" key={factor.key}>
+          <div><strong>{language === "zh" ? factor.label_zh : factor.label}</strong><code>{factor.key}</code><p>{language === "zh" ? factor.description_zh : factor.description}</p><small>{t("factorTerms")}: {factor.terms.map((term) => `${term.direction < 0 ? "−" : "+"}${language === "zh" ? term.label_zh : term.label} (${term.metric})`).join(" · ")}</small></div>
+          <span className="weight-chip">{t("weight")} {(factor.weight * 100).toFixed(0)}%</span>
         </div>)}</div>
-        {model.horizons.length > 0 && <div className="horizon-methods"><strong>{t("horizonAdjustment")}</strong><div>{model.horizons.map((horizon) => <span key={horizon.horizon}><b>{horizon.horizon}</b><small>{language === "zh" ? horizon.label_zh : horizon.label}</small><code>{horizon.formula}</code></span>)}</div></div>}
       </article>)}</div>
     </section>
   </div>;
@@ -1068,18 +1186,34 @@ function SummaryCards({ overview }: { overview: Overview }) {
 
 function StockTable({ stocks, active, setActive, horizon, search, catalog, heldSymbols }: { stocks: Stock[]; active: Stock | null; setActive: (stock: Stock) => void; horizon: Horizon; search: string; catalog: MetricCatalog | null; heldSymbols?: ReadonlySet<string> }) {
   const { t } = useI18n();
-  const visible = useMemo(() => stocks.filter((stock) => stock.symbol.includes(search.trim().toUpperCase())).sort((a, b) => scoreFor(b, horizon) - scoreFor(a, horizon)), [stocks, search, horizon]);
+  const visible = useMemo(() => stocks.filter((stock) => stock.symbol.includes(search.trim().toUpperCase())).sort((a, b) => {
+    const left = scoreFor(a, horizon);
+    const right = scoreFor(b, horizon);
+    if (left == null && right == null) return a.symbol.localeCompare(b.symbol);
+    if (left == null) return 1;
+    if (right == null) return -1;
+    return right - left;
+  }), [stocks, search, horizon]);
   const metric = (name: string) => catalog?.items.find((item) => item.name === name);
-  const scannerModel = catalog?.score_models.find((item) => item.id === "scanner_relative_score");
-  return <div className="table-wrap"><table className="data-table"><thead><tr><th>{t("symbol")}</th>{heldSymbols && <th>{t("holdingStatus")}</th>}<th>{t("latestClose")}</th><th><MetricLabel definition={metric("return_5d")}>{t("return5")}</MetricLabel></th><th><MetricLabel definition={metric("return_20d")}>{t("return20")}</MetricLabel></th><th><MetricLabel definition={metric("realized_volatility_20d")}>{t("volatility20")}</MetricLabel></th><th><MetricLabel definition={metric("drawdown_60d")}>{t("drawdown60")}</MetricLabel></th><th><MetricLabel scoreModel={scannerModel}>{horizon} {t("score")}</MetricLabel></th><th>{t("rows")}</th></tr></thead><tbody>
+  const alphaModel = catalog?.score_models.find((item) => item.id === `alpha_${horizon.toLowerCase()}`);
+  const riskModel = catalog?.score_models.find((item) => item.id === `risk_${horizon.toLowerCase()}`);
+  const returnMetric = horizon === "10D" ? "return_5d" : horizon === "30D" ? "return_20d" : "return_60d";
+  const returnLabel = horizon === "10D" ? t("return5") : horizon === "30D" ? t("return20") : t("return60");
+  const betaMetric = horizon === "90D" ? "beta_adjusted_return_60d" : "beta_adjusted_return_20d";
+  return <div className="table-wrap"><table className="data-table"><thead><tr><th>{t("symbol")}</th>{heldSymbols && <th>{t("holdingStatus")}</th>}<th>{t("latestClose")}</th><th><MetricLabel definition={metric(returnMetric)}>{returnLabel}</MetricLabel></th><th><MetricLabel definition={metric(betaMetric)}>{t("betaAdjustedReturn")}</MetricLabel></th><th><MetricLabel definition={metric(returnMetric)}>{t("historicalPercentile")}</MetricLabel></th><th><MetricLabel scoreModel={alphaModel}>{horizon} {t("alphaRank")}</MetricLabel></th><th><MetricLabel scoreModel={riskModel}>{horizon} {t("riskRank")}</MetricLabel></th><th>{t("rows")}</th></tr></thead><tbody>
     {visible.map((stock) => {
       const isHeld = heldSymbols?.has(stock.symbol) ?? false;
+      const alphaRank = scoreFor(stock, horizon);
+      const riskRank = riskFor(stock, horizon);
       return <tr key={stock.symbol} className={`${active?.symbol === stock.symbol ? "selected" : ""} ${isHeld ? "is-held" : ""}`.trim()} onClick={() => setActive(stock)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setActive(stock); }}>
       <td><strong>{stock.symbol}</strong><div className="company-name">{stock.source}</div></td>
       {heldSymbols && <td><span className={`holding-status ${isHeld ? "held" : ""}`}>{isHeld ? t("held") : t("notHeld")}</span></td>}
       <td className="mono">${stock.price.toFixed(2)}<div className={stock.change != null && stock.change >= 0 ? "positive-text" : "negative-text"}>{stock.change == null ? "—" : `${stock.change >= 0 ? "+" : ""}${stock.change.toFixed(2)}%`}</div></td>
-      <td className="mono">{formatPercent(stock.metrics.return_5d)}</td><td className="mono">{formatPercent(stock.metrics.return_20d)}</td><td className="mono">{formatPercent(stock.metrics.realized_volatility_20d, 1)}</td><td className="mono">{formatPercent(stock.metrics.drawdown_60d)}</td>
-      <td><span className={`score-pill ${scoreFor(stock, horizon) >= 60 ? "positive" : scoreFor(stock, horizon) < 40 ? "negative" : "neutral"}`}>{scoreFor(stock, horizon).toFixed(1)}</span></td><td className="mono">{stock.bar_count}</td>
+      <td className="mono">{formatPercent(stock.metrics[returnMetric])}</td>
+      <td className="mono">{formatPercent(stock.metrics[betaMetric])}</td>
+      <td className="mono">{formatRank(stock.historicalPercentiles?.[returnMetric])}</td>
+      <td><span className={`score-pill ${scoreTone(alphaRank)}`}>{formatNumber(alphaRank)}</span></td>
+      <td><span className={`score-pill ${scoreTone(riskRank, true)}`} title={t("higherRisk")}>{formatNumber(riskRank)}</span></td><td className="mono">{stock.bar_count}</td>
     </tr>;
     })}
   </tbody></table>{!visible.length && <div className="empty-state">{t("noMatch")}</div>}</div>;
@@ -1089,11 +1223,17 @@ function StockDetail({ stock, horizon, catalog }: { stock: Stock; horizon: Horiz
   const { t } = useI18n();
   const format = useFormatters();
   const score = scoreFor(stock, horizon);
-  const signal = score >= 65 ? t("positiveSetup") : score <= 35 ? t("weakSetup") : t("neutralSetup");
+  const risk = riskFor(stock, horizon);
+  const signal = score == null ? t("noData") : score >= 65 ? t("positiveSetup") : score <= 35 ? t("weakSetup") : t("neutralSetup");
+  const returnMetric = horizon === "10D" ? "return_5d" : horizon === "30D" ? "return_20d" : "return_60d";
+  const returnLabel = horizon === "10D" ? t("return5") : horizon === "30D" ? t("return20") : t("return60");
+  const betaMetric = horizon === "90D" ? "beta_adjusted_return_60d" : "beta_adjusted_return_20d";
+  const alphaModel = catalog?.score_models.find((item) => item.id === `alpha_${horizon.toLowerCase()}`);
+  const riskModel = catalog?.score_models.find((item) => item.id === `risk_${horizon.toLowerCase()}`);
   return <div className="panel detail-card">
     <div className="detail-hero"><div className="stock-identity"><div><h2 className="stock-symbol">{stock.symbol}</h2><div className="stock-sector">{stock.source} · {format.date(stock.last_observation)}</div></div><span className="tiny-badge live">{t("stored")}</span></div><div className="stock-price"><span className="price-main">${stock.price.toFixed(2)}</span><span className={stock.change != null && stock.change >= 0 ? "price-change" : "price-change negative-text"}>{stock.change == null ? "—" : `${stock.change >= 0 ? "+" : ""}${stock.change.toFixed(2)}%`}</span></div><div className="chart-area">{stock.bars.map((height, index) => <span className="chart-bar" style={{ height: `${height}%` }} key={index} />)}</div></div>
-    <div className="signal-block"><div className="signal-top"><span className="signal-label"><MetricLabel scoreModel={catalog?.score_models.find((item) => item.id === "scanner_relative_score")}>{horizon} {t("relativeScore")}</MetricLabel></span><span className="score-pill positive">{score.toFixed(1)}</span></div><div className="signal-status">{signal}</div><p className="signal-copy">{t("noFallback")}.</p></div>
-    <div className="driver-list"><p className="driver-title">{t("crossRanks")}</p><div className="driver"><span className="driver-dot" /><MetricLabel definition={catalog?.items.find((item) => item.name === "return_20d")}>{t("momentum20")}</MetricLabel><span className="driver-value">{stock.momentum.toFixed(1)}p</span></div><div className="driver"><span className="driver-dot" /><MetricLabel scoreModel={catalog?.score_models.find((item) => item.id === "scanner_relative_score")}>{t("relativeStrength")}</MetricLabel><span className="driver-value">{stock.relativeStrength.toFixed(1)}p</span></div><div className="driver"><span className="driver-dot risk" /><MetricLabel definition={catalog?.items.find((item) => item.name === "realized_volatility_20d")}>{t("realizedVol")}</MetricLabel><span className="driver-value">{stock.volatility.toFixed(1)}p</span></div></div>
+    <div className="signal-block"><div className="signal-top"><span className="signal-label"><MetricLabel scoreModel={alphaModel}>{horizon} {t("alphaRank")}</MetricLabel></span><span className={`score-pill ${scoreTone(score)}`}>{formatNumber(score)}</span></div><div className="signal-top"><span className="signal-label"><MetricLabel scoreModel={riskModel}>{horizon} {t("riskRank")}</MetricLabel></span><span className={`score-pill ${scoreTone(risk, true)}`}>{formatNumber(risk)}</span></div><div className="signal-status">{signal}</div><p className="signal-copy">{t("higherRisk")} · {t("noFallback")}.</p></div>
+    <div className="driver-list"><p className="driver-title">{t("rawMetrics")}</p><div className="driver"><span className="driver-dot" /><MetricLabel definition={catalog?.items.find((item) => item.name === returnMetric)}>{returnLabel}</MetricLabel><span className="driver-value">{formatPercent(stock.metrics[returnMetric])}</span></div><div className="driver"><span className="driver-dot" /><MetricLabel definition={catalog?.items.find((item) => item.name === betaMetric)}>{t("betaAdjustedReturn")}</MetricLabel><span className="driver-value">{formatPercent(stock.metrics[betaMetric])}</span></div><div className="driver"><span className="driver-dot" /><span>{t("crossSectionPercentile")}</span><span className="driver-value">{formatRank(stock.metricPercentiles?.[betaMetric])}</span></div><div className="driver"><span className="driver-dot" /><span>{t("historicalPercentile")}</span><span className="driver-value">{formatRank(stock.historicalPercentiles?.[returnMetric])}</span></div><div className="driver"><span className="driver-dot" /><span>Alpha raw [-1, 1]</span><span className="driver-value">{formatNumber(rawAlphaFor(stock, horizon), 3)}</span></div><div className="driver"><span className="driver-dot risk" /><span>Risk raw [-1, 1]</span><span className="driver-value">{formatNumber(rawRiskFor(stock, horizon), 3)}</span></div></div>
     <div className="snapshot-meta"><span>{t("metricVersion")}</span><strong className="mono">{stock.metric_version}</strong><span>{t("availableAt")}</span><strong>{format.date(stock.data_cutoff)}</strong><span>{t("dataQuality")}</span><strong>{stock.dataQuality.toFixed(0)}%</strong></div>
   </div>;
 }
@@ -1486,10 +1626,10 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
     [catalog],
   );
   const liveMetricKeys = [
-    ["return_5d", t("return5"), "percent"],
-    ["return_20d", t("return20"), "percent"],
-    ["realized_volatility_20d", t("volatility20"), "percent"],
-    ["drawdown_60d", t("drawdown60"), "percent"],
+    ["return_5d", t("return5")],
+    ["return_20d", t("return20")],
+    ["realized_volatility_20d", t("volatility20")],
+    ["drawdown_60d", t("drawdown60")],
   ] as const;
 
   if (!selected) return <EmptyMarket onOpenData={() => undefined} />;
@@ -1510,7 +1650,7 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
         <button className="secondary-button" disabled={endDay >= maxDay} onClick={() => shiftRange(1)} aria-label={`${t("moveLater")} ${shiftDays} ${t("shiftDays")}`}>{t("moveLater")} {shiftDays} →</button>
       </div>
       <div className="sticky-live-metrics" aria-live="polite">
-        {liveMetricKeys.map(([key, label, kind]) => <div key={key}><MetricLabel definition={metricDefinitions.get(key)}>{label}</MetricLabel><strong className="mono">{analysis ? (kind === "percent" ? formatPercent(analysis.metrics[key]) : analysis.metrics[key].toFixed(3)) : "—"}</strong></div>)}
+        {liveMetricKeys.map(([key, label]) => <div key={key}><MetricLabel definition={metricDefinitions.get(key)}>{label}</MetricLabel><strong className="mono">{analysis ? formatMetricValue(metricDefinitions.get(key), analysis.metrics[key]) : "—"}</strong></div>)}
       </div>
       <span className={`tiny-badge ${running ? "" : "live"}`}>{running ? t("calculating") : t("autoCalculate")}</span>
     </div>
@@ -1540,7 +1680,7 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
       <div className="panel coverage-panel"><div><span>{t("requestedRange")}</span><strong className="mono">{analysis.requested_start} → {analysis.requested_end}</strong></div><div><span>{t("actualCoverage")}</span><strong className="mono">{analysis.actual_start} → {analysis.actual_end}</strong></div><div><span>{t("sessions")}</span><strong className="mono">{analysis.bar_count}</strong></div>{analysis.coverage_warnings.length > 0 && <p className="coverage-warning">{t("coverageGap")}</p>}</div>
       <div className="panel range-chart"><div className="panel-header"><div><h2 className="panel-title">{analysis.symbol}</h2><p className="panel-subtitle">{analysis.source} · {analysis.metric_version}</p></div></div><div className="range-chart-bars">{analysis.series.map((point) => <span key={point.date} title={`${point.date}: ${point.close}`} style={{ height: `${chartHigh === chartLow ? 50 : 10 + 85 * (point.close - chartLow) / (chartHigh - chartLow)}%` }} />)}</div></div>
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("metricsSnapshot")}</h2><p className="panel-subtitle">Cutoff {analysis.data_cutoff}</p></div></div><div className="result-grid metric-results">
-        {[["return_5d", t("return5"), "percent"], ["return_20d", t("return20"), "percent"], ["realized_volatility_20d", t("volatility20"), "percent"], ["volume_zscore_20d", t("volumeZ"), "decimal"], ["distance_ma20", t("distanceMa"), "percent"], ["drawdown_60d", t("drawdown60"), "percent"]].map(([key, label, kind]) => <div className="result-card" key={key}><div className="result-label"><MetricLabel definition={metricDefinitions.get(key)}>{label}</MetricLabel></div><div className="result-value mono">{kind === "percent" ? formatPercent(analysis.metrics[key]) : analysis.metrics[key].toFixed(3)}</div></div>)}
+        {(catalog?.items ?? []).map((definition) => <div className="result-card" key={definition.name}><div className="result-label"><MetricLabel definition={definition}>{language === "zh" ? definition.display_name_zh : definition.display_name}</MetricLabel></div><div className="result-value mono">{formatMetricValue(definition, analysis.metrics[definition.name])}</div></div>)}
       </div></div>
       <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("forecast")}</h2><p className="panel-subtitle">{t("forecastDisclaimer")}</p></div></div><div className="forecast-grid">
         {[10, 30, 90].map((horizon) => {
@@ -1556,11 +1696,11 @@ function MetricsView({ stocks, catalog }: { stocks: Stock[]; catalog: MetricCata
             {forecast.status === "complete" ? <>
               <div><span>{t("medianReturn")} (50%)</span><strong className="mono">{formatPercent(medianReturn)}</strong></div>
               <div><span>{t("range1090")}</span><strong className="mono">{formatPercent(forecast.p10_return)} → {formatPercent(forecast.p90_return)}</strong></div>
-              <div className="forecast-price-heading"><span>{t("forecastPrices")}</span><small>{forecast.origin_date} · ${forecast.origin_price?.toFixed(2)}</small></div>
+              <div className="forecast-price-heading"><span>{t("forecastPrices")}</span><small>{forecast.origin_date} · {formatPrice(forecast.origin_price)}</small></div>
               <div className="forecast-price-levels">
-                <div><span>{t("p10Price")}</span><strong className="mono">${forecast.p10_price?.toFixed(2)}</strong></div>
-                <div className="median"><span>{t("p50Price")}</span><strong className="mono">${forecast.p50_price?.toFixed(2)}</strong></div>
-                <div><span>{t("p90Price")}</span><strong className="mono">${forecast.p90_price?.toFixed(2)}</strong></div>
+                <div><span>{t("p10Price")}</span><strong className="mono">{formatPrice(forecast.p10_price)}</strong></div>
+                <div className="median"><span>{t("p50Price")}</span><strong className="mono">{formatPrice(forecast.p50_price)}</strong></div>
+                <div><span>{t("p90Price")}</span><strong className="mono">{formatPrice(forecast.p90_price)}</strong></div>
               </div>
               <ForecastBandChart forecast={forecast} />
               <div><span>{t("positiveProbability")}</span><strong className="mono">{formatPercent(forecast.positive_probability, 1)}</strong></div>
@@ -1643,13 +1783,40 @@ function EventsView({ center, confidence, stocks, reload, onOpenSymbol }: { cent
   </div>;
 }
 
+function localizedBacktestWarning(warning: string, language: Language) {
+  if (language === "en") return warning;
+  const translationsByWarning: Record<string, string> = {
+    "The primary label is next-session open to horizon close, minus the same-period SPY price return.": "主要標籤使用下一交易日開盤至 horizon 收盤的報酬，再扣除相同期間的 SPY 價格報酬。",
+    "Overlapping forward labels are not independent; observation count must not be interpreted as an independent sample size.": "重疊的未來標籤並非獨立樣本；不可把觀察值數量直接解讀為獨立樣本數。",
+    "Results exclude fees, slippage, taxes, borrow costs, dividends, and survivorship corrections.": "結果尚未計入手續費、滑價、稅務、借券成本、股息與存活者偏差修正。",
+    "This is a research diagnostic, not a recommendation or trading instruction.": "這是研究診斷，不是投資建議或交易指令。",
+    "SPY plus at least three candidate symbols with sufficient history are required.": "需要 SPY 與至少三檔具備足夠歷史的候選標的。",
+  };
+  return translationsByWarning[warning] ?? warning;
+}
+
 function BacktestView({ backtests, run, running }: { backtests: Backtest[]; run: (horizon: number) => Promise<void>; running: boolean }) {
   const { language, t } = useI18n();
   const [horizon, setHorizon] = useState(30);
   const latest = backtests[0];
-  const result = latest?.result ?? latest;
+  if (!latest) return <div className="page-section"><Header eyebrow={t("walkForward")} title={t("testWithoutInventing")} copy={t("testWithoutInventingCopy")}><select className="filter-select" value={horizon} onChange={(event) => setHorizon(Number(event.target.value))}><option value={10}>10 {t("sessions")}</option><option value={30}>30 {t("sessions")}</option><option value={90}>90 {t("sessions")}</option></select><button className="primary-button" disabled={running} onClick={() => void run(horizon)}>{running ? t("running") : t("runBacktest")}</button></Header><div className="panel empty-market"><h2>{t("noBacktestResults")}</h2><p>{t("backtestEmptyCopy")}</p></div></div>;
+  const result = latest.result ?? latest;
   return <div className="page-section"><Header eyebrow={t("walkForward")} title={t("testWithoutInventing")} copy={t("testWithoutInventingCopy")}><select className="filter-select" value={horizon} onChange={(event) => setHorizon(Number(event.target.value))}><option value={10}>10 {t("sessions")}</option><option value={30}>30 {t("sessions")}</option><option value={90}>90 {t("sessions")}</option></select><button className="primary-button" disabled={running} onClick={() => void run(horizon)}>{running ? t("running") : t("runBacktest")}</button></Header>
-    {!latest ? <div className="panel empty-market"><h2>{t("noBacktestResults")}</h2><p>{t("backtestEmptyCopy")}</p></div> : <><div className="result-grid"><div className="result-card"><div className="result-label">{t("meanIc")}</div><div className="result-value mono">{result.mean_spearman_ic == null ? "—" : result.mean_spearman_ic.toFixed(3)}</div></div><div className="result-card"><div className="result-label">{t("spread")}</div><div className="result-value mono">{formatPercent(result.mean_top_bottom_spread)}</div></div><div className="result-card"><div className="result-label">{t("directionAccuracy")}</div><div className="result-value mono">{formatPercent(result.direction_accuracy)}</div></div><div className="result-card"><div className="result-label">{t("observations")}</div><div className="result-value mono">{result.observation_count}</div><div className="result-delta">{result.symbol_count} {t("symbols")}</div></div></div><div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("methodLimits")}</h2><p className="panel-subtitle">{result.version}</p></div></div><div className="note-list">{result.warnings.map((warning, index) => <div className="research-note" key={warning}>{language === "zh" ? (index === 0 ? "結果未計入手續費、滑價、稅務、借券成本與存活者偏差修正。" : "這是研究診斷，不是投資建議或交易指令。") : warning}</div>)}</div></div></>}
+    <div className="result-grid">
+      <div className="result-card"><div className="result-label">{t("meanIc")}</div><div className="result-value mono">{formatNumber(result.mean_spearman_ic, 3)}</div></div>
+      <div className="result-card"><div className="result-label">{t("medianIc")}</div><div className="result-value mono">{formatNumber(result.median_spearman_ic, 3)}</div></div>
+      <div className="result-card"><div className="result-label">{t("positiveIcRate")}</div><div className="result-value mono">{formatPercent(result.positive_ic_date_rate, 1)}</div></div>
+      <div className="result-card"><div className="result-label">{t("spread")}</div><div className="result-value mono">{formatPercent(result.mean_top_bottom_spread)}</div><div className="result-delta">{t("averageBucketSize")}: {formatNumber(result.mean_spread_bucket_size, 1)}</div></div>
+      <div className="result-card"><div className="result-label">{t("directionAccuracy")}</div><div className="result-value mono">{formatPercent(result.direction_accuracy)}</div><div className="result-delta">{t("directionBaseline")}: {formatPercent(result.direction_baseline)}</div></div>
+      <div className="result-card"><div className="result-label">{t("directionDelta")}</div><div className="result-value mono">{formatPercent(result.direction_accuracy_delta)}</div></div>
+      <div className="result-card"><div className="result-label">{t("riskVolatilityIc")}</div><div className="result-value mono">{formatNumber(result.risk_forward_volatility_ic, 3)}</div></div>
+      <div className="result-card"><div className="result-label">{t("riskDrawdownIc")}</div><div className="result-value mono">{formatNumber(result.risk_drawdown_severity_ic, 3)}</div></div>
+    </div>
+    <div className="panel coverage-panel"><div><span>{t("backtestCoverage")}</span><strong className="mono">{formatPercent(result.universe?.coverage_ratio, 1)}</strong></div><div><span>{t("evaluationDates")}</span><strong className="mono">{result.evaluation_dates}</strong></div><div><span>{t("candidateDates")}</span><strong className="mono">{result.candidate_evaluation_dates ?? "—"}</strong></div><div><span>{t("observations")}</span><strong className="mono">{result.observation_count}</strong></div><div><span>{t("symbols")}</span><strong className="mono">{result.symbol_count}</strong></div></div>
+    <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("versionLedger")}</h2><p className="panel-subtitle">{result.version}</p></div></div><div className="snapshot-meta"><span>{t("metricVersion")}</span><strong className="mono">{result.metric_version ?? "—"}</strong><span>{t("scoreVersion")}</span><strong className="mono">{result.score_version ?? "—"}</strong><span>{t("labelVersion")}</span><strong className="mono">{result.label_version ?? "—"}</strong><span>{t("storedUniverse")}</span><strong className="mono">{result.universe?.definition_version ?? "—"}</strong></div></div>
+    {(result.factor_ablation?.length ?? 0) > 0 && <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("factorAblation")}</h2><p className="panel-subtitle">{language === "zh" ? "每列顯示移除該 factor 後的結果，不把它當成新模型。" : "Each row shows the result after omitting one factor; it is not a newly selected model."}</p></div></div><div className="table-wrap"><table className="data-table"><thead><tr><th>{t("omittedFactor")}</th><th>{t("meanIc")}</th><th>{t("evaluationDates")}</th><th>{t("observations")}</th></tr></thead><tbody>{result.factor_ablation?.map((item) => <tr key={item.omitted_factor}><td><strong>{item.omitted_factor}</strong></td><td className="mono">{formatNumber(item.mean_spearman_ic, 3)}</td><td className="mono">{item.evaluation_dates}</td><td className="mono">{item.observation_count}</td></tr>)}</tbody></table></div></div>}
+    {(result.factor_correlations?.length ?? 0) > 0 && <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("factorCorrelation")}</h2><p className="panel-subtitle">{language === "zh" ? "同一評估日的 factor 橫截面 Spearman 相關；高相關代表資訊可能重疊。" : "Same-date cross-sectional Spearman correlation; high values indicate potentially overlapping information."}</p></div></div><div className="table-wrap"><table className="data-table"><thead><tr><th>{t("factorPair")}</th><th>Spearman</th><th>{t("evaluationDates")}</th></tr></thead><tbody>{result.factor_correlations?.map((item) => <tr key={`${item.left_factor}-${item.right_factor}`}><td><strong>{item.left_factor}</strong> ↔ <strong>{item.right_factor}</strong></td><td className="mono">{formatNumber(item.mean_spearman_correlation, 3)}</td><td className="mono">{item.evaluation_dates}</td></tr>)}</tbody></table></div></div>}
+    <div className="panel pipeline"><div className="panel-header"><div><h2 className="panel-title">{t("methodLimits")}</h2><p className="panel-subtitle">{result.version}</p></div></div><div className="note-list">{result.warnings.map((warning, index) => <div className="research-note" key={`${warning}-${index}`}>{localizedBacktestWarning(warning, language)}</div>)}</div></div>
   </div>;
 }
 

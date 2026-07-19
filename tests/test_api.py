@@ -40,9 +40,13 @@ def test_empty_database_never_returns_default_market_data(client: TestClient) ->
     scanner_model = next(
         item
         for item in body["score_models"]
-        if item["id"] == "scanner_relative_score"
+        if item["id"] == "alpha_30d"
     )
-    assert sum(term["weight"] for term in scanner_model["terms"]) == pytest.approx(1)
+    assert sum(
+        factor["weight"] for factor in scanner_model["factors"]
+    ) == pytest.approx(1)
+    assert body["items"][0]["minimum_observations"] > 0
+    assert body["items"][0]["null_policy"]
 
     portfolio = client.get("/api/v1/portfolio")
     assert portfolio.status_code == 200
@@ -204,10 +208,18 @@ def test_portfolio_uses_only_stored_market_prices(client: TestClient) -> None:
 def test_seal_requires_real_stored_market_data(client: TestClient) -> None:
     response = client.post(
         "/api/v1/predictions/seal",
-        json={"symbol": "NVDA", "horizon": "30D", "formula_version": "test-v1"},
+        json={"symbol": "NVDA", "horizon": "30D"},
     )
     assert response.status_code == 404
     assert "No stored market data" in response.json()["detail"]
+
+
+def test_uncalibrated_prediction_confidence_is_nullable(client: TestClient) -> None:
+    columns = client.app.state.repository.connection.execute(
+        "PRAGMA table_info('predictions')"
+    ).fetchall()
+    confidence = next(row for row in columns if row[1] == "confidence")
+    assert confidence[3] is False
 
 
 def test_scanner_is_derived_from_stored_bars(client: TestClient) -> None:
@@ -234,6 +246,7 @@ def test_scanner_is_derived_from_stored_bars(client: TestClient) -> None:
     assert items[0]["symbol"] == "REAL"
     assert items[0]["source"] == "massive"
     assert items[0]["price"] == 200
+    assert items[0]["score30"] is None
 
     analysis = client.post(
         "/api/v1/analyses",
@@ -256,6 +269,45 @@ def test_scanner_is_derived_from_stored_bars(client: TestClient) -> None:
     )
     assert backtest.status_code == 201
     assert "volatility_surface" not in backtest.json()
+
+
+def test_scanner_does_not_rewind_to_a_stale_benchmark(
+    client: TestClient,
+) -> None:
+    start = datetime(2025, 1, 2, 21, 5, tzinfo=UTC)
+
+    def history(symbol: str, count: int, offset: float) -> list[Bar]:
+        return [
+            Bar(
+                symbol=symbol,
+                timestamp=start + timedelta(days=index),
+                available_at=start + timedelta(days=index),
+                open=100 + offset + index * 0.1,
+                high=102 + offset + index * 0.1,
+                low=99 + offset + index * 0.1,
+                close=101 + offset + index * 0.1 + (index % 3) * 0.02,
+                volume=1_000_000 + index * 1_000,
+                source="massive",
+            )
+            for index in range(count)
+        ]
+
+    for symbol, offset in (("AAA", 0.0), ("BBB", 5.0), ("CCC", 10.0)):
+        client.app.state.repository.upsert_bars(history(symbol, 100, offset))
+    client.app.state.repository.upsert_bars(history("SPY", 90, 0.0))
+
+    response = client.get("/api/v1/scanner?horizon=30D")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["universe"]["as_of_session"] == (
+        start + timedelta(days=99)
+    ).date().isoformat()
+    assert body["universe"]["benchmark_aligned"] is False
+    assert all(item["score30"] is None for item in body["items"])
+    assert all(
+        item["metrics"]["beta_adjusted_return_20d"] is None
+        for item in body["items"]
+    )
 
 
 def test_forecast_actuals_are_the_only_out_of_range_analysis_data(

@@ -4,6 +4,7 @@ import hashlib
 import math
 import os
 import re
+import threading
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 
@@ -19,15 +20,47 @@ from .forecast import attach_historical_actuals, historical_analog_forecast
 from .metrics import CATALOG, METRIC_VERSION, compute_price_metrics
 from .providers.massive import MassiveMarketDataProvider, MassiveQuotaExceeded
 from .repository import PrismRepository
-from .scoring import compute_scanner_scores, scoring_methodology
+from .scoring import (
+    MINIMUM_CROSS_SECTION,
+    SCORE_VERSION,
+    score_cross_section,
+    scoring_methodology,
+)
 
 
-def _percentile(values: list[float], value: float) -> float:
-    if len(values) <= 1:
-        return 50.0
+def _historical_percentile(values: list[float], value: float) -> float | None:
+    if len(values) < 60:
+        return None
     below = sum(item < value for item in values)
     equal = sum(item == value for item in values)
     return round(100 * (below + 0.5 * equal) / len(values), 1)
+
+
+def _cross_sectional_percentiles(
+    values_by_symbol: dict[str, float],
+) -> dict[str, float]:
+    if len(values_by_symbol) < MINIMUM_CROSS_SECTION:
+        return {}
+    ordered = sorted(values_by_symbol.items(), key=lambda item: (item[1], item[0]))
+    result: dict[str, float] = {}
+    position = 0
+    while position < len(ordered):
+        end = position + 1
+        while end < len(ordered) and ordered[end][1] == ordered[position][1]:
+            end += 1
+        percentile = (
+            100.0
+            * ((position + end - 1) / 2.0)
+            / (len(ordered) - 1)
+        )
+        for index in range(position, end):
+            result[ordered[index][0]] = round(percentile, 1)
+        position = end
+    return result
+
+
+def _bar_date(bar: Any) -> str:
+    return bar.timestamp.astimezone(UTC).date().isoformat()
 
 
 def _normalized_path(values: list[float]) -> list[float]:
@@ -45,6 +78,9 @@ class PrismService:
 
     def __init__(self, repository: PrismRepository) -> None:
         self.repository = repository
+        self._scan_cache_lock = threading.RLock()
+        self._snapshot_cache: tuple[tuple[Any, ...], tuple[list[dict], dict]] | None = None
+        self._scan_cache: dict[tuple[Any, ...], dict] = {}
         api_key = os.getenv("MASSIVE_API_KEY", "").strip()
         self.provider = MassiveMarketDataProvider(api_key=api_key) if api_key else None
         self.ai_provider_mode = (
@@ -208,8 +244,19 @@ class PrismService:
         if len(bars) < 21:
             raise ValueError("At least 21 stored sessions are required")
 
-        cutoff = max(bar.available_at for bar in bars)
-        snapshot = compute_price_metrics(bars, cutoff)
+        benchmark_bars = (
+            bars
+            if ticker == "SPY"
+            else self.repository.list_bars("SPY", start=start, end=end)
+        )
+        cutoff = max(
+            bar.available_at for bar in [*bars, *benchmark_bars]
+        )
+        snapshot = compute_price_metrics(
+            bars,
+            cutoff,
+            benchmark_bars=benchmark_bars,
+        )
         actual_start = bars[0].timestamp.astimezone(UTC).date()
         actual_end = bars[-1].timestamp.astimezone(UTC).date()
         coverage_warnings: list[str] = []
@@ -1051,14 +1098,158 @@ class PrismService:
         )
         return event_id
 
-    def _raw_snapshots(self) -> list[dict]:
-        snapshots: list[dict] = []
-        for symbol in self.repository.list_symbols():
-            bars = self.repository.list_bars(symbol)
-            if len(bars) < 21:
+    def _historical_metric_percentiles(
+        self,
+        bars: list,
+        benchmark_bars: list,
+        current_metrics: dict[str, float | None],
+    ) -> dict[str, float | None]:
+        """Compare the current value only with metric values available strictly earlier."""
+        history: dict[str, list[float]] = {item.name: [] for item in CATALOG}
+        benchmark_by_date = {_bar_date(bar): bar for bar in benchmark_bars}
+        for endpoint_index in range(max(0, len(bars) - 253), len(bars) - 1):
+            endpoint = bars[endpoint_index]
+            benchmark_endpoint = benchmark_by_date.get(_bar_date(endpoint))
+            cutoff = max(
+                endpoint.available_at,
+                benchmark_endpoint.available_at
+                if benchmark_endpoint is not None
+                else endpoint.available_at,
+            )
+            prefix = [
+                bar
+                for bar in bars[: endpoint_index + 1]
+                if bar.available_at <= cutoff
+            ]
+            benchmark_prefix = [
+                bar
+                for bar in benchmark_bars
+                if bar.timestamp <= endpoint.timestamp and bar.available_at <= cutoff
+            ]
+            if not prefix:
                 continue
-            cutoff = max(bar.available_at for bar in bars)
-            snapshot = compute_price_metrics(bars, cutoff)
+            values = compute_price_metrics(
+                prefix,
+                cutoff,
+                benchmark_bars=benchmark_prefix,
+            ).values
+            for name, value in values.items():
+                if value is not None:
+                    history[name].append(float(value))
+        return {
+            name: (
+                _historical_percentile(history[name], float(value))
+                if value is not None
+                else None
+            )
+            for name, value in current_metrics.items()
+        }
+
+    def _snapshot_context(self) -> tuple[list[dict], dict]:
+        summary = self.repository.market_summary()
+        cache_key = (
+            summary["bar_count"],
+            summary["data_cutoff"],
+            summary["last_synced_at"],
+        )
+        if self._snapshot_cache and self._snapshot_cache[0] == cache_key:
+            return self._snapshot_cache[1]
+        histories = {
+            symbol: self.repository.list_bars(symbol)
+            for symbol in self.repository.list_symbols()
+        }
+        requested_symbols = sorted(
+            symbol for symbol in histories if symbol != "SPY"
+        )
+        benchmark_bars = histories.get("SPY", [])
+        benchmark_dates = {_bar_date(bar) for bar in benchmark_bars}
+        session_coverage: dict[str, int] = {}
+        for symbol in requested_symbols:
+            for session in {_bar_date(bar) for bar in histories[symbol]}:
+                session_coverage[session] = session_coverage.get(session, 0) + 1
+        aligned_sessions = [
+            session
+            for session, count in session_coverage.items()
+            if count >= MINIMUM_CROSS_SECTION
+        ]
+        if not aligned_sessions:
+            aligned_sessions = [
+                session
+                for session, count in session_coverage.items()
+                if count > 0
+            ]
+        as_of_session = max(aligned_sessions) if aligned_sessions else None
+        base_universe = {
+            "definition_version": "stored-research-universe-v0.2",
+            "benchmark_symbol": "SPY",
+            "benchmark_available": bool(benchmark_bars),
+            "benchmark_aligned": as_of_session in benchmark_dates,
+            "requested_symbols": requested_symbols,
+            "requested_count": len(requested_symbols),
+            "symbol_list_hash": hashlib.sha256(
+                "\n".join(requested_symbols).encode()
+            ).hexdigest(),
+            "as_of_session": as_of_session,
+        }
+        if as_of_session is None:
+            result = ([], {
+                **base_universe,
+                "data_cutoff": None,
+                "eligible_symbols": [],
+                "eligible_count": 0,
+                "excluded": [
+                    {"symbol": symbol, "reason": "no_common_session"}
+                    for symbol in requested_symbols
+                ],
+                "coverage_ratio": 0.0,
+                "scored_symbols": {"10D": [], "30D": [], "90D": []},
+            })
+            self._snapshot_cache = (cache_key, result)
+            return result
+
+        latest_by_symbol = {
+            symbol: next(
+                (
+                    bar
+                    for bar in reversed(histories[symbol])
+                    if _bar_date(bar) == as_of_session
+                ),
+                None,
+            )
+            for symbol in [*requested_symbols, "SPY"]
+            if symbol in histories
+        }
+        current_bars = [
+            bar for bar in latest_by_symbol.values() if bar is not None
+        ]
+        cutoff = max(bar.available_at for bar in current_bars)
+        benchmark_prefix = [
+            bar
+            for bar in benchmark_bars
+            if _bar_date(bar) <= as_of_session and bar.available_at <= cutoff
+        ]
+
+        snapshots: list[dict] = []
+        excluded: list[dict[str, str]] = []
+        for symbol in requested_symbols:
+            if latest_by_symbol.get(symbol) is None:
+                excluded.append({"symbol": symbol, "reason": "missing_common_session"})
+                continue
+            bars = [
+                bar
+                for bar in histories[symbol]
+                if _bar_date(bar) <= as_of_session and bar.available_at <= cutoff
+            ]
+            if len(bars) < 21:
+                excluded.append(
+                    {"symbol": symbol, "reason": "fewer_than_21_sessions"}
+                )
+                continue
+            snapshot = compute_price_metrics(
+                bars,
+                cutoff,
+                benchmark_bars=benchmark_prefix,
+            )
             latest = bars[-1]
             previous = bars[-2] if len(bars) > 1 else None
             change = (
@@ -1077,93 +1268,200 @@ class PrismService:
                     "last_observation": latest.timestamp.astimezone(UTC).isoformat(),
                     "data_cutoff": cutoff.astimezone(UTC).isoformat(),
                     "metrics": snapshot.values,
+                    "historicalPercentiles": self._historical_metric_percentiles(
+                        bars,
+                        benchmark_prefix,
+                        snapshot.values,
+                    ),
                     "metric_version": snapshot.metric_version,
                     "source": latest.source,
                 }
             )
-        return snapshots
-
-    def scan(self, horizon: str = "30D", search: str = "") -> list[dict]:
-        snapshots = self._raw_snapshots()
-        if not snapshots:
-            return []
-        momentum_values = [
-            float(item["metrics"]["return_20d"]) for item in snapshots
-        ]
-        trend_values = [
-            float(item["metrics"]["distance_ma20"]) for item in snapshots
-        ]
-        volume_values = [
-            float(item["metrics"]["volume_zscore_20d"]) for item in snapshots
-        ]
-        volatility_values = [
-            float(item["metrics"]["realized_volatility_20d"]) for item in snapshots
-        ]
-        benchmark = next(
-            (
-                float(item["metrics"]["return_20d"])
-                for item in snapshots
-                if item["symbol"] == "SPY"
+        universe = {
+            **base_universe,
+            "data_cutoff": cutoff.astimezone(UTC).isoformat(),
+            "eligible_symbols": [item["symbol"] for item in snapshots],
+            "eligible_count": len(snapshots),
+            "excluded": excluded,
+            "coverage_ratio": (
+                len(snapshots) / len(requested_symbols)
+                if requested_symbols
+                else 0.0
             ),
-            0.0,
-        )
-        relative_values = [
-            float(item["metrics"]["return_20d"]) - benchmark for item in snapshots
-        ]
-        needle = search.strip().upper()
-        results: list[dict] = []
-        for item, relative_value in zip(snapshots, relative_values, strict=True):
-            if needle and needle not in item["symbol"]:
-                continue
-            metrics = item["metrics"]
-            momentum = _percentile(momentum_values, float(metrics["return_20d"]))
-            relative = _percentile(relative_values, relative_value)
-            trend = _percentile(trend_values, float(metrics["distance_ma20"]))
-            volume = _percentile(volume_values, float(metrics["volume_zscore_20d"]))
-            volatility = _percentile(
-                volatility_values,
-                float(metrics["realized_volatility_20d"]),
-            )
-            scores = compute_scanner_scores(
+        }
+        result = (snapshots, universe)
+        self._snapshot_cache = (cache_key, result)
+        return result
+
+    def _compute_scan_with_universe(
+        self,
+        horizon: str = "30D",
+    ) -> dict:
+        snapshots, universe = self._snapshot_context()
+        if not snapshots:
+            return {"items": [], "universe": universe}
+        metrics_by_symbol = {
+            item["symbol"]: item["metrics"] for item in snapshots
+        }
+        scored = score_cross_section(metrics_by_symbol)
+        cross_percentiles = {
+            definition.name: _cross_sectional_percentiles(
                 {
-                    "momentum": momentum,
-                    "relative_strength": relative,
-                    "trend_quality": trend,
-                    "volume_confirmation": volume,
-                    "volatility_percentile": volatility,
-                },
-                metrics,
+                    symbol: float(metrics[definition.name])
+                    for symbol, metrics in metrics_by_symbol.items()
+                    if metrics.get(definition.name) is not None
+                }
             )
-            score = scores[horizon]
-            if score >= 65:
-                signal = "Positive relative setup"
+            for definition in CATALOG
+        }
+        momentum_metric = {
+            "10D": "return_5d",
+            "30D": "return_20d",
+            "90D": "return_60d",
+        }[horizon]
+        relative_metric = (
+            "beta_adjusted_return_60d"
+            if horizon == "90D"
+            else "beta_adjusted_return_20d"
+        )
+        volatility_metric = (
+            "realized_volatility_60d"
+            if horizon == "90D"
+            else "realized_volatility_20d"
+        )
+        results: list[dict] = []
+        for item in snapshots:
+            symbol = item["symbol"]
+            horizons = scored[symbol]["horizons"]
+            selected = horizons[horizon]
+            score = selected["alpha_rank"]
+            trend_factor = selected["alpha_factors"].get("trend_quality")
+            if score is None:
+                signal = "Insufficient aligned data for a cross-sectional score"
+            elif score >= 65:
+                signal = "Stronger cross-sectional alpha baseline"
             elif score <= 35:
-                signal = "Weak relative setup"
+                signal = "Weaker cross-sectional alpha baseline"
             else:
-                signal = "No strong relative edge"
+                signal = "Middle cross-sectional alpha baseline"
+            non_null_metrics = sum(
+                value is not None for value in item["metrics"].values()
+            )
             results.append(
                 {
                     **item,
-                    "name": item["symbol"],
+                    "name": symbol,
                     "sector": None,
-                    "momentum": momentum,
-                    "relativeStrength": relative,
-                    "trendQuality": trend,
-                    "volumeConfirmation": volume,
-                    "volatility": volatility,
-                    "score10": scores["10D"],
-                    "score30": scores["30D"],
-                    "score90": scores["90D"],
+                    "universeRole": "candidate",
+                    "metricPercentiles": {
+                        name: ranks.get(symbol)
+                        for name, ranks in cross_percentiles.items()
+                    },
+                    "momentum": cross_percentiles[momentum_metric].get(symbol),
+                    "marketAdjustedMomentum": cross_percentiles[
+                        relative_metric
+                    ].get(symbol),
+                    "relativeStrength": cross_percentiles[relative_metric].get(symbol),
+                    "trendQuality": (
+                        50.0 * (float(trend_factor) + 1.0)
+                        if trend_factor is not None
+                        else None
+                    ),
+                    "volumeConfirmation": cross_percentiles[
+                        "up_down_volume_balance_20d"
+                    ].get(symbol),
+                    "volatility": cross_percentiles[volatility_metric].get(symbol),
+                    "score10": horizons["10D"]["alpha_rank"],
+                    "score30": horizons["30D"]["alpha_rank"],
+                    "score90": horizons["90D"]["alpha_rank"],
+                    "risk10": horizons["10D"]["risk_rank"],
+                    "risk30": horizons["30D"]["risk_rank"],
+                    "risk90": horizons["90D"]["risk_rank"],
+                    "alphaScore10": horizons["10D"]["alpha_score"],
+                    "alphaScore30": horizons["30D"]["alpha_score"],
+                    "alphaScore90": horizons["90D"]["alpha_score"],
+                    "riskScore10": horizons["10D"]["risk_score"],
+                    "riskScore30": horizons["30D"]["risk_score"],
+                    "riskScore90": horizons["90D"]["risk_score"],
+                    "scoreDetails": horizons,
+                    "scoreModelVersion": SCORE_VERSION,
                     "score": score,
                     "signal": signal,
                     "signalCopy": (
-                        "Computed only from stored Massive bars available by the "
-                        "displayed cutoff. No demo fallback is used."
+                        "Computed from one aligned stored-data session. Missing "
+                        "inputs remain null and no fallback value is substituted."
                     ),
-                    "dataQuality": round(min(100.0, item["bar_count"] / 252 * 100), 1),
+                    "dataQuality": round(
+                        100.0 * non_null_metrics / len(CATALOG),
+                        1,
+                    ),
                 }
             )
-        return sorted(results, key=lambda item: item["score"], reverse=True)
+        scored_symbols = {
+            horizon_name: [
+                symbol
+                for symbol in sorted(scored)
+                if scored[symbol]["horizons"][horizon_name]["alpha_rank"] is not None
+            ]
+            for horizon_name in ("10D", "30D", "90D")
+        }
+        universe = {**universe, "scored_symbols": scored_symbols}
+        universe["score_coverage"] = {
+            horizon_name: (
+                len(symbols) / universe["eligible_count"]
+                if universe["eligible_count"]
+                else 0.0
+            )
+            for horizon_name, symbols in scored_symbols.items()
+        }
+        universe["unscored_symbols"] = {
+            horizon_name: [
+                symbol
+                for symbol in universe["eligible_symbols"]
+                if symbol not in symbols
+            ]
+            for horizon_name, symbols in scored_symbols.items()
+        }
+        results.sort(
+            key=lambda item: (
+                item["score"] is not None,
+                float(item["score"]) if item["score"] is not None else -math.inf,
+            ),
+            reverse=True,
+        )
+        return {"items": results, "universe": universe}
+
+    def scan_with_universe(
+        self,
+        horizon: str = "30D",
+        search: str = "",
+    ) -> dict:
+        with self._scan_cache_lock:
+            summary = self.repository.market_summary()
+            cache_key = (
+                summary["bar_count"],
+                summary["data_cutoff"],
+                summary["last_synced_at"],
+                horizon,
+            )
+            cached = self._scan_cache.get(cache_key)
+            if cached is None:
+                cached = self._compute_scan_with_universe(horizon=horizon)
+                self._scan_cache = {cache_key: cached}
+            needle = search.strip().upper()
+            if not needle:
+                return cached
+            return {
+                **cached,
+                "items": [
+                    item
+                    for item in cached["items"]
+                    if needle in item["symbol"]
+                ],
+            }
+
+    def scan(self, horizon: str = "30D", search: str = "") -> list[dict]:
+        return self.scan_with_universe(horizon=horizon, search=search)["items"]
 
     def stock_detail(self, symbol: str) -> dict | None:
         return next(
@@ -1172,12 +1470,16 @@ class PrismService:
         )
 
     def overview(self) -> dict:
-        items = self.scan()
+        scan_result = self.scan_with_universe()
+        items = scan_result["items"]
         summary = self.repository.market_summary()
-        positive = sum(
-            float(item["metrics"]["return_20d"]) > 0 for item in items
-        )
-        breadth = positive / len(items) if items else None
+        breadth_values = [
+            float(item["metrics"]["return_20d"])
+            for item in items
+            if item["metrics"]["return_20d"] is not None
+        ]
+        positive = sum(value > 0 for value in breadth_values)
+        breadth = positive / len(breadth_values) if breadth_values else None
         if breadth is None:
             regime = None
         elif breadth >= 0.65:
@@ -1196,9 +1498,15 @@ class PrismService:
                 "breadth": breadth,
             },
             "candidate_coverage": {
-                "passing": sum(item["score30"] >= 60 for item in items),
-                "universe": len(items),
+                "passing": sum(
+                    item["score30"] is not None and item["score30"] >= 60
+                    for item in items
+                ),
+                "universe": len(
+                    scan_result["universe"]["scored_symbols"].get("30D", [])
+                ),
             },
+            "universe": scan_result["universe"],
             "latest_backtest": latest_backtest[0] if latest_backtest else None,
             "ledger": {
                 "records": len(self.repository.list_predictions()),
@@ -1217,6 +1525,14 @@ class PrismService:
                 "required_inputs": item.required_inputs,
                 "output_type": item.output_type,
                 "unit": item.unit,
+                "window_basis": item.window_basis,
+                "price_basis": item.price_basis,
+                "includes_current_session": item.includes_current_session,
+                "minimum_observations": item.minimum_observations,
+                "ddof": item.ddof,
+                "null_policy": item.null_policy,
+                "zero_denominator_policy": item.zero_denominator_policy,
+                "calculation_cutoff": item.calculation_cutoff,
                 "version": item.version,
             }
             for item in CATALOG
@@ -1224,6 +1540,7 @@ class PrismService:
 
     def metric_methodology(self) -> dict:
         return {
+            "schema_version": "metric-methodology-v0.2",
             "items": self.metric_catalog(),
             "score_models": scoring_methodology(),
         }
@@ -1368,11 +1685,6 @@ class PrismService:
             symbol: self.repository.list_bars(symbol)
             for symbol in self.repository.list_symbols()
         }
-        histories = {
-            symbol: bars
-            for symbol, bars in histories.items()
-            if len(bars) >= 61 + horizon_sessions
-        }
         result = walk_forward_backtest(
             histories,
             horizon_sessions=horizon_sessions,
@@ -1380,10 +1692,14 @@ class PrismService:
         backtest_id = self.repository.append_backtest(
             metric_version=METRIC_VERSION,
             horizon_sessions=horizon_sessions,
-            symbols=sorted(histories),
+            symbols=result["universe"]["requested_symbols"],
             parameters={
                 "rebalance_every_sessions": 5,
-                "execution": "signal close to future close",
+                "diagnostic_label": "signal close to horizon close",
+                "primary_label": "next-session open to horizon close minus SPY",
+                "score_version": SCORE_VERSION,
+                "label_version": result["label_version"],
+                "universe": result["universe"],
                 "version": BACKTEST_VERSION,
             },
             result=result,
@@ -1401,13 +1717,23 @@ class PrismService:
         self,
         symbol: str,
         horizon: Literal["10D", "30D", "90D"],
-        formula_version: str,
     ) -> dict:
         detail = self.stock_detail(symbol)
         if detail is None:
             raise ValueError("No stored market data exists for this symbol")
         score = detail[{"10D": "score10", "30D": "score30", "90D": "score90"}[horizon]]
-        direction = "Bullish" if score >= 60 else "Bearish" if score < 40 else "Neutral"
+        if score is None:
+            raise ValueError(
+                "This symbol does not have enough aligned data for the selected score"
+            )
+        direction = (
+            "RelativeOutperformance"
+            if score >= 60
+            else "RelativeUnderperformance"
+            if score < 40
+            else "NeutralRelativeRank"
+        )
+        rank_extremity = abs(score - 50) * 2
         created_at = datetime.now(UTC)
         return self.repository.append_prediction(
             {
@@ -1416,11 +1742,11 @@ class PrismService:
                 "symbol": symbol,
                 "horizon": horizon,
                 "direction": direction,
-                "confidence": abs(score - 50) * 2,
+                "confidence": None,
                 "expected_range": "Not calibrated",
                 "actual_outcome": "Pending",
                 "outcome": "Pending",
-                "formula_version": formula_version,
+                "formula_version": SCORE_VERSION,
                 "metric_version": detail["metric_version"],
                 "input_snapshot": {
                     "metrics": detail["metrics"],
@@ -1429,6 +1755,19 @@ class PrismService:
                         "30D": detail["score30"],
                         "90D": detail["score90"],
                     },
+                    "risk_ranks": {
+                        "10D": detail["risk10"],
+                        "30D": detail["risk30"],
+                        "90D": detail["risk90"],
+                    },
+                    "score_details": detail["scoreDetails"],
+                    "score_version": SCORE_VERSION,
+                    "calibration_status": "not_calibrated",
+                    "rank_extremity": rank_extremity,
+                    "rank_extremity_semantics": (
+                        "distance from the 50th cross-sectional percentile; "
+                        "not a probability or calibrated confidence"
+                    ),
                     "data_cutoff": detail["data_cutoff"],
                     "provider": detail["source"],
                 },
